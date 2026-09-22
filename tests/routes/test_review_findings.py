@@ -228,3 +228,27 @@ def test_the_readme_settings_table_matches_the_code():
 
     assert read_by_code - documented == set(), f"read but undocumented: {read_by_code - documented}"
     assert documented - read_by_code == set(), f"documented but never read: {documented - read_by_code}"
+
+
+def test_health_is_unhealthy_when_the_store_is_not_there(monkeypatch):
+    """A health check that touches nothing only proves Python is running.
+
+    With the database unreachable the container reported healthy for ever —
+    and so did anything waiting on `service_healthy` — while every real
+    request failed.
+    """
+    from fastapi.testclient import TestClient
+
+    import main
+    from api.models import database
+
+    with TestClient(main.create_app()) as client:
+        assert client.get("/healthz").json()["outcome"] == "ok"
+
+        def broken() -> None:
+            raise RuntimeError("the store is gone")
+
+        monkeypatch.setattr(database, "ping", broken)
+        answer = client.get("/healthz")
+        assert answer.status_code != 200, "a dead store still reported healthy"
+        assert answer.json()["outcome"] == "internal_error"

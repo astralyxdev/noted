@@ -90,15 +90,24 @@ export function useDashboard(filters: Filters) {
   const [more, setMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const inFlight = useRef(false)
+  // A refresh that arrived while the list was busy is not dropped: dropping it
+  // loses whatever the live event was announcing. It is run once afterwards.
+  const missed = useRef(false)
   const loaded = useRef(PAGE)
   const shown = useRef<TaskSummary[]>([])
   shown.current = tasks
+  const again = useRef<() => void>(() => {})
 
   const refresh = useCallback(async () => {
-    if (inFlight.current) return
+    if (inFlight.current) {
+      missed.current = true
+      return
+    }
     inFlight.current = true
     try {
-      const want = Math.min(Math.max(loaded.current, PAGE), LIVE_WINDOW_CAP)
+      // `filters.limit` is in the URL, so it has to mean something: it is the
+      // page size, and the window only ever grows past it by paging.
+      const want = Math.min(Math.max(loaded.current, filters.limit || PAGE), LIVE_WINDOW_CAP)
       const [list, overview] = await Promise.all([
         api.list(filters, { limit: want }),
         api.overview(filters.project === NONE ? NONE : filters.project),
@@ -117,31 +126,47 @@ export function useDashboard(filters: Filters) {
     } finally {
       inFlight.current = false
       setPending(false)
+      if (missed.current) {
+        missed.current = false
+        again.current()
+      }
     }
   }, [filters])
+
+  again.current = refresh
 
   const loadMore = useCallback(async () => {
     const last = shown.current[shown.current.length - 1]
     if (!last || loadingMore || inFlight.current) return
+    // Held for the same reason refresh holds it: a refresh landing mid-page
+    // re-reads the top of the list while this cursor walks the bottom, and a
+    // task created in between falls into the gap and is never shown.
+    inFlight.current = true
     setLoadingMore(true)
+    const page = filters.limit || PAGE
     try {
-      const next = await api.list(filters, { limit: PAGE, beforeId: last.id })
+      const next = await api.list(filters, { limit: page, beforeId: last.id })
       if (next.length > 0) {
         setTasks((prev) => [...prev, ...next])
         loaded.current += next.length
       }
-      setMore(next.length === PAGE)
+      setMore(next.length === page)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setLoadingMore(false)
+      inFlight.current = false
+      if (missed.current) {
+        missed.current = false
+        again.current()
+      }
     }
   }, [filters, loadingMore])
 
   useEffect(() => {
     // Filters changed, so the list starts over: otherwise the tail of the
     // previous result would stick to the new one.
-    loaded.current = PAGE
+    loaded.current = filters.limit || PAGE
     setTasks([])
     setMore(false)
     setPending(true)
@@ -173,33 +198,61 @@ export function useNearBottom(enabled: boolean, onReach: () => void) {
 
 export type LiveState = 'connecting' | 'live' | 'down'
 
-/** The server announces changes itself. There is no timer-based polling. */
-export function useLive(onChange: () => void): LiveState {
+/** The server announces changes itself. There is no timer-based polling.
+ *
+ * `enabled` is what stops the stream being opened before the user is signed
+ * in. `/events` answers 401 then, and a non-2xx first response is fatal to an
+ * EventSource — the browser does not retry it — so the stream stayed dead for
+ * the rest of the session and live updates never arrived, with only a reload
+ * to fix it.
+ */
+export function useLive(onChange: () => void, enabled = true): LiveState {
   const [state, setState] = useState<LiveState>('connecting')
   const handler = useRef(onChange)
   handler.current = onChange
 
   useEffect(() => {
+    if (!enabled) {
+      setState('connecting')
+      return
+    }
     // TS narrows `'EventSource' in window` to always-true, so check the type.
     if (typeof EventSource === 'undefined') {
       const timer = setInterval(() => handler.current(), 10_000)
       return () => clearInterval(timer)
     }
-    const source = new EventSource('/events')
-    // An event carries the whole transition, but the dashboard only needs the
-    // fact of a change: it re-reads its window instead of rebuilding state.
-    source.addEventListener('task', () => handler.current())
-    source.onopen = () => setState('live')
-    source.onerror = () => setState('down')
+    let source: EventSource
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let stopped = false
+
+    const open = () => {
+      source = new EventSource('/events')
+      // An event carries the whole transition, but the dashboard only needs the
+      // fact of a change: it re-reads its window instead of rebuilding state.
+      source.addEventListener('task', () => handler.current())
+      source.onopen = () => setState('live')
+      source.onerror = () => {
+        setState('down')
+        // CLOSED means the browser has given up for good — a refused first
+        // response, typically. Reopening is the only way back.
+        if (!stopped && source.readyState === EventSource.CLOSED) {
+          retry = setTimeout(open, 3000)
+        }
+      }
+    }
+    open()
+
     const onVisible = () => {
       if (!document.hidden) handler.current()
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
+      stopped = true
+      if (retry) clearTimeout(retry)
       source.close()
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [])
+  }, [enabled])
 
   return state
 }

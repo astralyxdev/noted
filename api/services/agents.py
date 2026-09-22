@@ -110,13 +110,17 @@ def issue(name: str, projects: Sequence[str] | None = None, is_admin: bool = Fal
     now = time.time()
 
     with database.transaction() as conn:
-        existing = conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        if existing is not None:
-            raise AgentError(Outcome.validation_error, f"agent {agent_id} already exists")
-        conn.execute(
-            "INSERT INTO agents (id, key_hash, projects, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
+        # The uniqueness of the name is the table's business, not something to
+        # decide from an earlier SELECT: two `noted-keys add` at once would both
+        # read "free" and one would then raise a driver error instead of the
+        # refusal this function is supposed to give.
+        inserted = conn.execute(
+            "INSERT INTO agents (id, key_hash, projects, is_admin, created_at) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (id) DO NOTHING RETURNING id",
             (agent_id, _hash(key), json.dumps(scope) if scope else None, int(is_admin), now),
-        )
+        ).fetchone()
+        if inserted is None:
+            raise AgentError(Outcome.validation_error, f"agent {agent_id} already exists")
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
 
     return IssuedKey(agent=_agent(row), key=key)
@@ -210,23 +214,33 @@ def ensure_session(session_id: str, agent_id: str, transport: str | None = None)
     if row is not None:
         if row["agent_id"] != agent_id or row["closed_at"] is not None:
             return None
-        # Renewal is a write under the global lock, and every request carries a
-        # session. Touch the row only once per third of the TTL.
-        if now - row["renewed_at"] <= ttl / 3:
+        # Renewal is a write, and every request carries a session, so the row is
+        # touched only once per third of the TTL. A changed declaration is the
+        # exception: it decides how this client's silence is read, and waiting
+        # would leave the collector acting on the old answer.
+        if now - row["renewed_at"] <= ttl / 3 and row["transport"] == transport:
             return _session(row)
 
     with database.transaction() as conn:
-        current = conn.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,)).fetchone()
-        if current is None:
-            conn.execute(
-                "INSERT INTO agent_sessions (id, agent_id, transport, opened_at, renewed_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (session_id, agent_id, transport, now, now),
-            )
-        elif current["agent_id"] != agent_id or current["closed_at"] is not None:
+        # Insert first and let a loser fall through: an MCP client opening two
+        # streams at once presents the same id from both, and deciding from a
+        # SELECT would turn the second into a driver error.
+        conn.execute(
+            "INSERT INTO agent_sessions (id, agent_id, transport, opened_at, renewed_at)"
+            " VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+            (session_id, agent_id, transport, now, now),
+        )
+        current = conn.execute(
+            "SELECT * FROM agent_sessions WHERE id = ?" + database.row_lock(), (session_id,)
+        ).fetchone()
+        if current is None or current["agent_id"] != agent_id or current["closed_at"] is not None:
             return None
-        else:
-            conn.execute("UPDATE agent_sessions SET renewed_at = ? WHERE id = ?", (now, session_id))
+        # `transport` is rewritten every time: a supervisor that starts renewing
+        # must be able to say so, and one that stops must not keep the promise.
+        conn.execute(
+            "UPDATE agent_sessions SET renewed_at = ?, transport = ? WHERE id = ?",
+            (now, transport, session_id),
+        )
         return _session(conn.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,)).fetchone())
 
 

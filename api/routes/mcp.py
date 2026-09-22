@@ -20,7 +20,7 @@ from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events, run_service
 from api.utils.authorization import ANONYMOUS, Principal
-from api.utils.authorization import from_headers, transport_of
+from api.utils.authorization import principal_from, transport_of
 from api.utils.tool_docs import (
     CLAIM_TASK,
     GET_TASK,
@@ -45,7 +45,7 @@ def _who(ctx: Context | None) -> Principal:
     would be a second write under the global lock for one call."""
     if ctx is None:
         return ANONYMOUS
-    return from_headers(ctx.headers, transport_of(ctx.headers, "/mcp"), renew=False) or ANONYMOUS
+    return principal_from(ctx.headers, transport_of(ctx.headers, "/mcp"), renew=False) or ANONYMOUS
 
 
 def _out(env) -> dict[str, Any]:
@@ -86,7 +86,7 @@ async def set_task(
             allowed_projects=who.projects,
         )
     except TaskError as exc:
-        return _out(envelope(exc.code, exc.message, task=None))
+        return _out(envelope(exc.code, exc.message))
 
     if created:
         await events.notify_new_task()
@@ -120,12 +120,15 @@ async def get_tasks(
             limit=limit,
         )
     except TaskError as exc:
-        return _out(envelope(exc.code, exc.message, tasks=[], count=0))
+        return _out(envelope(exc.code, exc.message))
     return _out(envelope(Outcome.ok, tasks=found, count=len(found)))
 
 
 async def get_task(task_id: int, with_events: bool = False, ctx: Context | None = None) -> dict[str, Any]:
-    found = await run_service(tasks_service.get, task_id)
+    try:
+        found = await run_service(tasks_service.get, task_id)
+    except TaskError as exc:
+        return _out(envelope(exc.code, exc.message))
     if found is None:
         return _out(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
     if not _who(ctx).may_touch(found.project):
@@ -166,7 +169,7 @@ async def set_status(
             force=force,
         )
     except TaskError as exc:
-        return _out(envelope(exc.code, exc.message, task=None))
+        return _out(envelope(exc.code, exc.message))
 
     if outcome is Outcome.updated:
         # Work may have appeared for a waiting agent in two ways: this task is
@@ -209,7 +212,7 @@ async def claim_task(
                 allowed_projects=who.projects,
             )
         except TaskError as exc:
-            return _out(envelope(exc.code, exc.message, task=None))
+            return _out(envelope(exc.code, exc.message))
 
         if task is not None:
             await events.notify_change()
@@ -232,14 +235,19 @@ async def heartbeat(
     existing = await run_service(tasks_service.get, task_id)
     if existing is not None and not who.may_touch(existing.project):
         return _out(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
-    outcome, task = await run_service(
-        tasks_service.heartbeat,
-        task_id=task_id,
-        assignee_id=who.name or assignee_id,
-        lease_s=lease_s,
-        session_id=who.session_id,
-        strict_session=who.agent is not None and not who.is_admin,
-    )
+    try:
+        outcome, task = await run_service(
+            tasks_service.heartbeat,
+            task_id=task_id,
+            assignee_id=who.name or assignee_id,
+            lease_s=lease_s,
+            session_id=who.session_id,
+            strict_session=who.agent is not None and not who.is_admin,
+        )
+    except TaskError as exc:
+        # Without this the reason never reaches the model: the SDK reports an
+        # unexpected tool error and drops the message.
+        return _out(envelope(exc.code, exc.message))
     message = {
         Outcome.not_found: f"task {task_id} does not exist",
         Outcome.status_conflict: f"the task is not in progress but {task.status.value if task else ''}",

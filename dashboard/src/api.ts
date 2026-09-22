@@ -78,8 +78,9 @@ async function call(path: string, init?: RequestInit): Promise<Envelope> {
 
   const body = (await response.json().catch(() => null)) as Envelope | null
   if (!body) throw new ApiError(`the core answered ${response.status} with no body`, 'internal_error')
-  // `empty` and `not_found` are normal outcomes, but the dashboard treats them
-  // as failed calls too, so only ok=false ever reaches this point.
+  // Only `ok=false` gets here: `empty` is a success envelope and never reaches
+  // this branch at all. `not_found` does, and the caller turns it into a
+  // message rather than a crash.
   if (!body.ok) throw new ApiError(body.message ?? body.outcome, body.outcome)
   return body
 }

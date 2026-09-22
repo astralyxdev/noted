@@ -150,6 +150,30 @@ def transport_of(headers: Mapping[str, str] | None, path: str) -> str:
     return "http-mcp" if path.startswith("/mcp") else "http"
 
 
+def principal_from(
+    headers: Mapping[str, str] | None,
+    transport: str = "http",
+    renew: bool = True,
+) -> Principal | None:
+    """Headers to principal, counting the dashboard's cookie as well.
+
+    The middleware has two doors — a key in a header, and a browser pass in a
+    cookie — and anything that works out a principal for itself has to know
+    about both. `from_headers` alone silently answers ANONYMOUS to a caller the
+    middleware has already let in as an administrator, and then the two
+    disagree about who is calling.
+    """
+    who = from_headers(headers, transport, renew)
+    if who is not None:
+        return who
+    lookup = {k.lower(): v for k, v in (headers or {}).items()}
+    for crumb in (lookup.get("cookie") or "").split(";"):
+        name, _, value = crumb.strip().partition("=")
+        if name == COOKIE and _browser_admin(value):
+            return Principal(is_admin=True)
+    return None
+
+
 def resolve(request: Request) -> Principal | JSONResponse:
     transport = transport_of(request.headers, request.url.path)
     who = from_headers(request.headers, transport)

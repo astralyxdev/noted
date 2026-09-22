@@ -32,35 +32,45 @@ from api.utils.authorization import middleware as token_middleware
 log = logging.getLogger("noted")
 
 async def reaper() -> None:
-    """Returns tasks whose lease nobody renewed back to the queue.
+    """The collector: expired leases and dead sessions back to the queue, ended
+    retry pauses announced, the journal trimmed, dead session rows dropped.
 
-    Without this `stale_seconds` only gives detection: a crashed agent leaves
-    its task hanging forever. Here it repairs itself.
+    Without it `stale_seconds` only gives detection: a crashed agent leaves its
+    task hanging forever. Here it repairs itself.
     """
     interval = settings.reap_interval_s()
     while True:
         await asyncio.sleep(interval)
         try:
-            # A quiet session is not closed — the collector reads liveness from
-            # `renewed_at` directly, so a client that went silent for one long
-            # step can carry on afterwards.
-            requeued = await run_service(tasks_service.reap_expired)
+            await _collect()
         except Exception:  # noqa: BLE001 - one failure must not kill the collector
-            log.exception("the lease collector stumbled")
-            continue
-        # A pause that has ended is work appearing, just like an expired lease:
-        # the row was written minutes ago and became claimable in silence.
-        due = await run_service(tasks_service.due_retries)
-        if requeued or due:
-            if requeued:
-                log.info("leases expired, tasks returned to the queue: %s", requeued)
-            await task_events.notify_new_task()
+            # Every job is inside this, not only the first. A transient store
+            # error in any of the others used to raise out of the loop, and
+            # since nothing awaits this task until shutdown the exception was
+            # swallowed: leases silently stopped being reclaimed for the rest
+            # of the process's life.
+            log.exception("the collector stumbled")
 
-        trimmed = await run_service(tasks_service.trim_journal)
-        if trimmed:
-            log.info("journal trimmed: %s entries of closed tasks", trimmed)
 
-        await run_service(agents_service.prune_sessions)
+async def _collect() -> None:
+    """One round of it."""
+    # A quiet session is not closed — liveness is read from `renewed_at`
+    # directly, so a client silent through one long step can carry on after.
+    requeued = await run_service(tasks_service.reap_expired)
+
+    # A pause that has ended is work appearing, just like an expired lease:
+    # the row was written minutes ago and became claimable in silence.
+    due = await run_service(tasks_service.due_retries)
+    if requeued or due:
+        if requeued:
+            log.info("leases expired, tasks returned to the queue: %s", requeued)
+        await task_events.notify_new_task()
+
+    trimmed = await run_service(tasks_service.trim_journal)
+    if trimmed:
+        log.info("journal trimmed: %s entries of closed tasks", trimmed)
+
+    await run_service(agents_service.prune_sessions)
 
 
 def ui_dir() -> Path:
@@ -100,6 +110,18 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
+        """Liveness that means something.
+
+        Answering 200 from a handler that touches nothing said only that Python
+        was running. With the database unreachable the container still reported
+        healthy — for ever, and to anything waiting on `service_healthy` —
+        while every real request failed. So the check reaches the store.
+        """
+        try:
+            await run_service(database.ping)
+        except Exception as exc:  # noqa: BLE001 - any failure to reach the store is unhealthy
+            log.warning("health check could not reach the store: %s", exc)
+            return respond(envelope(Outcome.internal_error, "the store is not answering"))
         return respond(envelope(Outcome.ok))
 
     @app.exception_handler(TaskError)
@@ -119,8 +141,10 @@ def create_app() -> FastAPI:
         # The status code is preserved: turning a 405 into a 500 lies to the client.
         if exc.status_code == 404:
             outcome = Outcome.not_found
-        elif exc.status_code in (401, 403):
+        elif exc.status_code == 401:
             outcome = Outcome.unauthorized
+        elif exc.status_code == 403:
+            outcome = Outcome.forbidden
         elif 400 <= exc.status_code < 500:
             outcome = Outcome.validation_error
         else:

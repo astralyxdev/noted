@@ -169,6 +169,17 @@ def transaction() -> Iterator[Connection]:
 atexit.register(close)
 
 
+def ping() -> None:
+    """Cheapest possible proof that the store answers. Raises if it does not.
+
+    This also forces the pool open, which otherwise happens lazily on the first
+    real request — so a database that was never reachable is found at the
+    health check rather than by the first agent.
+    """
+    with reading() as conn:
+        conn.execute("SELECT 1").fetchone()
+
+
 def wipe() -> None:
     """Empty every table. For tests; the running service never calls it."""
     with transaction() as conn:

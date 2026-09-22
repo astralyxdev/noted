@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/components/ui/toast'
-import { api } from '@/api'
+import { api, NONE } from '@/api'
 
 type Props = {
   open: boolean
@@ -45,7 +45,10 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
     setPayloadError(null)
     setPriority('0')
     setAttempts('')
-    setScope(project ?? '')
+    // NONE is the filter's way of saying "no project", not a project to
+    // prefill — copying it verbatim created tasks under a project called
+    // `__none__`, which then appeared in everyone's filter list.
+    setScope(project && project !== NONE ? project : '')
   }, [open, project])
 
   async function submit(event: FormEvent) {

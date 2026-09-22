@@ -89,6 +89,11 @@ def close() -> None:
         pass
 
 
+def ping() -> None:
+    """Ask the store whether it is actually there. Raises if it is not."""
+    store().ping()
+
+
 def wipe() -> None:
     """Empty every table of the current store. For tests only."""
     store().wipe()

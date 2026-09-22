@@ -19,6 +19,6 @@ def respond(env: Envelope) -> JSONResponse:
 
 
 async def run_service(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """Services are synchronous (sqlite), so they run in a worker thread:
-    blocking the event loop would stall every waiting long-poll with it."""
+    """Services are synchronous — both stores are — so they run in a worker
+    thread: blocking the event loop would stall every waiting long-poll."""
     return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))

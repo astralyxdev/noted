@@ -92,6 +92,12 @@ def transaction() -> Iterator[sqlite3.Connection]:
         conn.execute("COMMIT")
 
 
+def ping() -> None:
+    """Cheapest possible proof that the store answers. Raises if it does not."""
+    with reading() as conn:
+        conn.execute("SELECT 1").fetchone()
+
+
 def wipe() -> None:
     """Empty every table. For tests; the running service never calls it."""
     with transaction() as conn:

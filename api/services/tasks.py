@@ -7,8 +7,10 @@ start the application.
 
 It knows nothing about the engine either. One dialect is written here —
 `?` and `:name` placeholders, SQL both SQLite and PostgreSQL accept — and the
-store underneath renders it. The single place the two differ is the row lock a
-claim takes, and that arrives as `database.claim_lock()`.
+store underneath renders it. The two differ only in the locks: `claim_lock()`
+for taking a task, `row_lock()` wherever a row is read in order to decide what
+to write to it. On SQLite both are empty — the process lock already serialises
+every writer — and on PostgreSQL they are what replaces it.
 """
 
 from __future__ import annotations
@@ -151,9 +153,13 @@ def _event(row: database.Row) -> TaskEvent:
 
 
 def _fetch(conn: database.Connection, task_id: int, lock: bool = False) -> database.Row | None:
-    """One task by id. `lock` holds the row for the rest of the transaction,
-    and every path that reads a task in order to decide whether to write it
-    asks for that — otherwise the decision can be stale by the time it lands."""
+    """One task by id. `lock` holds the row for the rest of the transaction.
+
+    Every path that reads a task in order to decide whether to write it asks
+    for that, or the decision can be stale by the time it lands. The dependent
+    walkers do not go through here; they lock their candidates themselves,
+    because they select by dependency rather than by id.
+    """
     sql = "SELECT * FROM tasks WHERE id = ?" + (database.row_lock() if lock else "")
     return conn.execute(sql, (task_id,)).fetchone()
 
@@ -278,6 +284,11 @@ def create(
                 "INSERT INTO task_deps (task_id, depends_on_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
                 (task_id, dep),
             )
+        if wanted_deps and _has_dead_predecessor(conn, task_id):
+            conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (task_id,))
+            _log(conn, task_id, "blocked", actor="system", from_status=Status.pending.value,
+                 to_status=Status.blocked.value, detail={"reason": "a dependency is already closed unsuccessfully"},
+                 at=now)
         _log(
             conn,
             task_id,
@@ -438,6 +449,22 @@ def list_tasks(
 
 
 # ─────────────────────────── changing state ──────────────────────────────
+
+
+def _has_dead_predecessor(conn: database.Connection, task_id: int) -> bool:
+    """Is this task waiting on something that will never be done?
+
+    `pending` with an unmet dependency is a task that is simply not its turn
+    yet. `pending` behind a `failed` or `cancelled` predecessor is different:
+    nothing will ever move it, and `claim` will not hand it out, so without
+    this it sits in the queue looking claimable and is invisible among the
+    `blocked` — exactly the state `_block_dependents` exists to prevent.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id"
+        " WHERE d.task_id = ? AND p.status IN ('failed', 'cancelled')",
+        (task_id,),
+    ).fetchone()["n"] > 0
 
 
 def _unblock_dependents(conn: database.Connection, task_id: int, now: float) -> list[int]:
@@ -834,6 +861,15 @@ def reap_expired() -> list[int]:
                      to_status="pending",
                      detail={"held_by": row["assignee_id"], "attempts": row["attempts"],
                              "reason": "session died" if row["by_session"] else "lease expired"}, at=now)
+                # While it was held, a predecessor may have failed — and
+                # `_block_dependents` skipped it then, because it was not
+                # pending. Back in the queue it would be unclaimable and
+                # invisible, so the check happens here instead.
+                if _has_dead_predecessor(conn, row["id"]):
+                    conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (row["id"],))
+                    _log(conn, row["id"], "blocked", actor="system", from_status="pending",
+                         to_status="blocked", detail={"reason": "a dependency closed while this was held"}, at=now)
+                    continue
                 requeued.append(row["id"])
 
     return requeued

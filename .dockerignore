@@ -17,3 +17,11 @@ TECHNICAL_DOCUMENTATION.md
 README.md
 dashboard/node_modules/
 dashboard/dist/
+
+# Never send secrets into the build context. Nothing copies them today, but the
+# first broad COPY somebody adds would, and by then nobody is looking.
+.env
+.env.*
+!.env.example
+.mcp.json
+demo_agent_project/

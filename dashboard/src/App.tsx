@@ -51,7 +51,7 @@ export function App() {
     void refresh()
   }, [refresh])
 
-  const live = useLive(reload)
+  const live = useLive(reload, !locked)
   const bottom = useNearBottom(more && !pending, loadMore)
 
   const changeStatus = useCallback(
