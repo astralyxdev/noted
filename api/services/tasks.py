@@ -320,6 +320,43 @@ def events(task_id: int, limit: int = 200) -> list[TaskEvent]:
     return [_event(r) for r in rows]
 
 
+#: How long a hole in the journal is given to fill before it is taken for a
+#: transaction that rolled back rather than one still running.
+GAP_GRACE_S = 5.0
+
+
+def _watermark(conn: database.Connection, after: int, limit: int) -> int:
+    """The last journal id that is safe to hand out.
+
+    Ids come from a sequence, so they are allocated when a row is written and
+    not when it commits. Two writers can therefore make entry 12 visible while
+    entry 11 is still in flight — and a reader that hands out 12 has moved its
+    cursor past 11, which it will then never see. That is the whole "lossless
+    reconnection" promise gone, quietly, under ordinary concurrency.
+
+    So delivery stops at the last id with no hole behind it. A hole is either a
+    transaction still running, in which case it fills in a moment, or one that
+    rolled back, in which case it never will — which is what the grace period
+    below tells apart. On SQLite writers are serialised and holes only come
+    from rollbacks, so this costs nothing there.
+    """
+    rows = conn.execute(
+        "SELECT id, at FROM task_events WHERE id > ? ORDER BY id LIMIT ?",
+        (int(after), int(limit)),
+    ).fetchall()
+    settled = time.time() - GAP_GRACE_S
+    mark = int(after)
+    for row in rows:
+        contiguous = row["id"] == mark + 1
+        # A visible entry older than the grace period means anything still
+        # missing below it has been in flight longer than that: gone, not slow.
+        if contiguous or row["at"] < settled:
+            mark = row["id"]
+            continue
+        break
+    return mark
+
+
 def events_after(
     cursor: int = 0,
     limit: int = 200,
@@ -336,8 +373,8 @@ def events_after(
     would replay the whole history of every project to ask for it.
     """
     limit = max(1, min(int(limit), MAX_LIMIT))
-    where = ["e.id > ?"]
-    args: list[Any] = [int(cursor)]
+    where = ["e.id > ?", "e.id <= ?"]
+    args: list[Any] = [int(cursor), 0]  # the ceiling is filled in below
     if allowed_projects is not None:
         names = sorted({str(p) for p in allowed_projects})
         listed = ", ".join("?" * len(names)) or "NULL"
@@ -346,6 +383,10 @@ def events_after(
     args.append(limit)
 
     with database.reading() as conn:
+        # The ceiling is computed on the whole journal, not on what the scope
+        # leaves: a scoped reader sees gaps anyway, and contiguity is only
+        # meaningful before filtering.
+        args[1] = _watermark(conn, cursor, limit)
         rows = conn.execute(
             "SELECT e.* FROM task_events e JOIN tasks t ON t.id = e.task_id"
             f" WHERE {' AND '.join(where)} ORDER BY e.id LIMIT ?",

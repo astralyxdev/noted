@@ -9,6 +9,8 @@ yourself by somebody else's name is no longer possible.
 from __future__ import annotations
 
 import hmac
+import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -29,7 +31,10 @@ MCP_SESSION_HEADER = "Mcp-Session-Id"
 
 #: /events carries the whole journal — actors, projects, payload details —
 #: so it sits behind the same door as the API.
-GUARDED = ("/api", "/mcp", "/events")
+#: `/docs`, `/redoc` and `/openapi.json` describe every route and body, so they
+#: sit behind the same door. With no token and no keys the queue is open and
+#: they are open with it.
+GUARDED = ("/api", "/mcp", "/events", "/docs", "/redoc", "/openapi.json")
 EXEMPT = ("/healthz", "/api/login")
 
 COOKIE = "noted_admin"
@@ -38,6 +43,28 @@ COOKIE_TTL_S = 7 * 24 * 3600
 #: Passes handed to browsers. Kept in memory on purpose: a restart logs people
 #: out, but there is nowhere to steal a pass from and nothing to revoke by hand.
 _browser_passes: dict[str, float] = {}
+
+#: Failed dashboard logins per client address. `NOTED_TOKEN` is a secret a
+#: person chose, and the door was answering wrong guesses as fast as they
+#: arrived. Kept in memory like the passes: a restart forgets it, which is the
+#: right trade for a queue that is meant to run on a loopback port.
+_login_failures: dict[str, list[float]] = {}
+LOGIN_TRIES = 8
+LOGIN_WINDOW_S = 60.0
+
+
+def login_allowed(client: str) -> bool:
+    """Whether this address may still try. Also prunes what has aged out."""
+    fresh = [at for at in _login_failures.get(client, []) if at > time.time() - LOGIN_WINDOW_S]
+    if fresh:
+        _login_failures[client] = fresh
+    else:
+        _login_failures.pop(client, None)
+    return len(fresh) < LOGIN_TRIES
+
+
+def login_failed(client: str) -> None:
+    _login_failures.setdefault(client, []).append(time.time())
 
 
 @dataclass(frozen=True)
@@ -106,9 +133,6 @@ def from_headers(
 
 def open_browser_pass() -> str:
     """A pass for the dashboard: a browser sends no headers and will not add any."""
-    import secrets
-    import time
-
     pass_id = secrets.token_urlsafe(24)
     _browser_passes[pass_id] = time.time() + COOKIE_TTL_S
     return pass_id
@@ -119,10 +143,9 @@ def close_browser_pass(pass_id: str | None) -> None:
         _browser_passes.pop(pass_id, None)
 
 
-def _browser_admin(request: Request) -> bool:
-    import time
-
-    pass_id = request.cookies.get(COOKIE)
+def _browser_admin(pass_id: str | None) -> bool:
+    """Is this pass still good? Takes the pass rather than the request: an MCP
+    tool has only headers to work from, and both doors must agree."""
     if not pass_id:
         return False
     expires = _browser_passes.get(pass_id)
@@ -180,7 +203,7 @@ def resolve(request: Request) -> Principal | JSONResponse:
     if who is not None:
         return who
     # The dashboard cannot send the header, so it has its own door and cookie.
-    if _browser_admin(request):
+    if _browser_admin(request.cookies.get(COOKIE)):
         return Principal(is_admin=True)
     return _denied(f"a valid key is required in the {HEADER} header")
 

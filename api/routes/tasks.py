@@ -23,6 +23,10 @@ from api.utils import events, respond, run_service
 from api.utils import authorization
 from api.utils.authorization import of as principal_of
 
+#: The longest a long poll sleeps before trying again, however long the caller
+#: asked to wait for. See the note in claim_task.
+POLL_CEILING_S = 15.0
+
 router = APIRouter(prefix="/api", tags=["tasks"])
 
 
@@ -71,7 +75,11 @@ async def claim_task(request: ClaimRequest, http: Request):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return respond(envelope(Outcome.empty, task=None))
-        await events.wait_for_task(remaining)
+        # Capped rather than waiting out the whole timeout: the waiter only
+        # registers on the condition after the claim above has returned, so a
+        # notification fired in that gap is missed. The window is tiny, and
+        # this bounds what it can cost to one short wait instead of minutes.
+        await events.wait_for_task(min(remaining, POLL_CEILING_S))
 
 
 @router.get("/tasks")
@@ -200,6 +208,9 @@ async def login(request: LoginRequest, http: Request):
     """The dashboard door. A browser sends no headers, so it gets a cookie."""
     presented = request.token.strip()
     expected = authorization.admin_token()
+    client = http.client.host if http.client else "unknown"
+    if not authorization.login_allowed(client):
+        return respond(envelope(Outcome.rate_limited, "too many attempts — wait a minute"))
 
     # Either the shared admin token, or an admin key issued by noted-keys:
     # without the second, a queue with identity on and no NOTED_TOKEN would have
@@ -211,6 +222,7 @@ async def login(request: LoginRequest, http: Request):
     if not expected and not agents_service.identity_required():
         return respond(envelope(Outcome.ok, "no token is set, so no login is needed"))
     if not (by_token or by_key):
+        authorization.login_failed(client)
         return respond(envelope(Outcome.unauthorized, "wrong token"))
 
     response = respond(envelope(Outcome.ok))

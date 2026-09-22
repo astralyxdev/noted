@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.services import tasks as tasks_service
@@ -57,7 +57,9 @@ async def _cursor(request: Request, after: int | None) -> int:
         try:
             return max(0, int(resumed))
         except ValueError:
-            pass
+            # Falling through to "only what is new" would lose the history the
+            # client was asking for, without telling it anything.
+            raise HTTPException(status_code=422, detail=f"a numeric cursor is required, got {resumed!r}") from None
     return await run_service(tasks_service.last_event_id)
 
 

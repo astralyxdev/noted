@@ -296,7 +296,7 @@ the file, so `docker run -e` and `export` override `.env`.
 | `NOTED_DB_POOL` | `10` | connections held against PostgreSQL |
 | `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
 | `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
-| `NOTED_TOKEN` | empty | when set, `/api`, `/mcp` and `/events` require `X-Noted-Token` |
+| `NOTED_TOKEN` | empty | when set, `/api`, `/mcp`, `/events` and `/docs` require `X-Noted-Token` |
 | `NOTED_LEASE_S` | `300` | lease length when the agent asks for none |
 | `NOTED_SESSION_TTL_S` | `90` | how long a session survives without renewal |
 | `NOTED_REAP_INTERVAL_S` | `15` | how often expired leases are collected |
@@ -320,6 +320,11 @@ elsewhere, hand out per-agent keys rather than a shared token.
 **Access.** Agents arrive with a key in a header; the dashboard has its own
 door — with `NOTED_TOKEN` set the browser asks for it once and keeps a pass in a
 cookie. There are no roles inside the dashboard: whoever signs in is an admin.
+The door stops answering after eight wrong guesses a minute from one address.
+
+A key's scope covers everything readable, not only the task list: the journal
+at `/events`, the counters at `/api/stats`, the project and assignee names, and
+whether a given task id exists at all.
 
 **Data.** On SQLite it is one file in WAL mode, living in a volume: back it up
 by copying the directory with the container stopped, or with
@@ -343,8 +348,9 @@ under load, measured, is in [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION
 (`NOTED_CREATE_LIMIT` per `NOTED_CREATE_WINDOW_S`). It catches a looping agent
 rather than dividing the queue fairly — there are no quotas here.
 
-**Watching it.** `HEALTHCHECK` polls `/healthz`, so `docker ps` shows not only
-"running" but "answering". Abandoned tasks are collected by the service itself
+**Watching it.** `HEALTHCHECK` polls `/healthz`, which reaches the database
+before answering — so `docker ps` shows not "the process started" but "this
+container can actually do work". Abandoned tasks are collected by the service itself
 once a lease expires; the `stale_seconds` filter and the journal remain for
 understanding what happened.
 

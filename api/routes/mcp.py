@@ -16,6 +16,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from api.models.envelope import Outcome, body, envelope
 from api.models.task import MAX_TIMEOUT_S, Status
+from api.routes.tasks import POLL_CEILING_S
 from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events, run_service
@@ -221,7 +222,8 @@ async def claim_task(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return _out(envelope(Outcome.empty, task=None))
-        await events.wait_for_task(remaining)
+        # Capped for the same reason as the JSON route: see POLL_CEILING_S.
+        await events.wait_for_task(min(remaining, POLL_CEILING_S))
 
 
 async def heartbeat(

@@ -504,6 +504,10 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
       update.
 - [ ] The image carries the built frontend but no Node; tasks survive recreating
       the container.
+- [ ] The suite passes on **both** stores. `pytest -q` alone only exercises
+      SQLite, where the process lock makes the row-locking clauses redundant —
+      the one place the engines genuinely differ is then untested:
+      `NOTED_TEST_DB_URL=postgresql://… pytest -q`
 - [ ] `grep -r "sqlite3\|psycopg\|SELECT" api/routes` is empty: no SQL escaped
       the services.
 
@@ -518,6 +522,11 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | A long poll ties up a connection and a thread | waiting on a `Condition` (the thread stays free), `timeout_s` clamped to 300 s |
 | The MCP session manager is run twice | the application is built by a factory; each one gets its own server |
 | A tool description promises what the code does not | a test pins the two together |
+| A scope guards writes but not reads | counters, names, the journal and task references all follow it |
+| Two writers decide from the same stale read | `row_lock()` before the decision, a status guard on the write |
+| The journal cursor skips an entry that was still in flight | delivery stops at the last contiguous id |
+| A health check that only proves Python is running | `/healthz` reaches the store |
+| The collector dies on a transient error and nothing notices | every job of it is inside the guard |
 | A task is resurrected forever | the attempt counts on claim; exhaustion means a dead letter |
 | The lease collector dies quietly | the exception is logged and the loop continues |
 | An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |

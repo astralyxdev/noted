@@ -252,3 +252,45 @@ def test_health_is_unhealthy_when_the_store_is_not_there(monkeypatch):
         answer = client.get("/healthz")
         assert answer.status_code != 200, "a dead store still reported healthy"
         assert answer.json()["outcome"] == "internal_error"
+
+
+def test_the_dashboard_door_stops_answering_endless_guesses(monkeypatch):
+    """`NOTED_TOKEN` is a secret a person chose, so the guesses have to cost."""
+    from fastapi.testclient import TestClient
+
+    import main
+    from api.utils import authorization
+
+    monkeypatch.setenv("NOTED_TOKEN", "the-real-one")
+    authorization._login_failures.clear()
+
+    with TestClient(main.create_app()) as client:
+        outcomes = [
+            client.post("/api/login", json={"token": f"guess-{n}"}).json()["outcome"]
+            for n in range(authorization.LOGIN_TRIES + 3)
+        ]
+
+    assert outcomes[0] == "unauthorized"
+    assert "rate_limited" in outcomes, f"every guess was answered: {outcomes}"
+    assert outcomes[-1] == "rate_limited"
+
+
+def test_an_mcp_tool_sees_the_same_principal_as_the_json_api(monkeypatch):
+    """The middleware has two doors — a key, and the dashboard's cookie — and
+    anything that works out a principal for itself has to know both.
+
+    Reading headers alone answered ANONYMOUS to a caller the middleware had
+    already admitted as an administrator, so the two disagreed about who was
+    calling and the tools could not tell an admin from nobody.
+    """
+    from api.utils import authorization
+
+    monkeypatch.setenv("NOTED_TOKEN", "shared")
+    pass_id = authorization.open_browser_pass()
+    headers = {"Cookie": f"other=1; {authorization.COOKIE}={pass_id}"}
+
+    who = authorization.principal_from(headers)
+    assert who is not None and who.is_admin, "the cookie was not recognised outside the middleware"
+
+    stale = authorization.principal_from({"Cookie": f"{authorization.COOKIE}=not-a-pass"})
+    assert stale is None, "an unknown pass was accepted"
