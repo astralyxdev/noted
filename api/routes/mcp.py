@@ -85,6 +85,7 @@ async def get_tasks(
     unassigned: bool = False,
     parent_id: int | None = None,
     stale_seconds: float | None = None,
+    before_id: int | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     try:
@@ -97,6 +98,7 @@ async def get_tasks(
             unassigned=unassigned,
             parent_id=parent_id,
             stale_seconds=stale_seconds,
+            before_id=before_id,
             limit=limit,
         )
     except TaskError as exc:

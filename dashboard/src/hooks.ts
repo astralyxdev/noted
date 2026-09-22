@@ -2,7 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { api, NONE, STATUSES, type Filters, type Stats, type Status, type TaskSummary } from '@/api'
 
-const DEFAULT_LIMIT = 100
+const DEFAULT_LIMIT = 50
+
+/** Сколько строк догружать за раз при скролле. */
+export const PAGE = 50
+
+/**
+ * Потолок окна, которое перечитывается по событию от сервера. Дальше хвост
+ * остаётся таким, каким загрузился: это старые задачи, они почти не меняются,
+ * а тянуть тысячи строк на каждое изменение незачем.
+ */
+const LIVE_WINDOW_CAP = 500
 
 const EMPTY_STATS: Stats = {
   pending: 0,
@@ -76,17 +86,25 @@ export function useDashboard(filters: Filters) {
   const [assignees, setAssignees] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(true)
+  const [more, setMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const inFlight = useRef(false)
+  const loaded = useRef(PAGE)
+  const shown = useRef<TaskSummary[]>([])
+  shown.current = tasks
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return
     inFlight.current = true
     try {
+      const want = Math.min(Math.max(loaded.current, PAGE), LIVE_WINDOW_CAP)
       const [list, overview] = await Promise.all([
-        api.list(filters),
+        api.list(filters, { limit: want }),
         api.overview(filters.project === NONE ? NONE : filters.project),
       ])
-      setTasks(list)
+      // Хвост за пределами окна сохраняем — перечитывать его на каждое событие дорого.
+      setTasks((prev) => (prev.length > want ? [...list, ...prev.slice(want)] : list))
+      setMore((prev) => (shown.current.length > want ? prev : list.length === want))
       setStats(overview.stats)
       setProjects(overview.projects)
       setAssignees(overview.assignees)
@@ -99,12 +117,55 @@ export function useDashboard(filters: Filters) {
     }
   }, [filters])
 
+  const loadMore = useCallback(async () => {
+    const last = shown.current[shown.current.length - 1]
+    if (!last || loadingMore || inFlight.current) return
+    setLoadingMore(true)
+    try {
+      const next = await api.list(filters, { limit: PAGE, beforeId: last.id })
+      if (next.length > 0) {
+        setTasks((prev) => [...prev, ...next])
+        loaded.current += next.length
+      }
+      setMore(next.length === PAGE)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [filters, loadingMore])
+
   useEffect(() => {
+    // Сменились фильтры — начинаем список заново, иначе к новой выдаче
+    // прилипнет хвост от предыдущей.
+    loaded.current = PAGE
+    setTasks([])
+    setMore(false)
     setPending(true)
     void refresh()
   }, [refresh])
 
-  return { tasks, stats, projects, assignees, error, pending, refresh }
+  return { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh }
+}
+
+/** Догружает следующую порцию, когда низ списка подошёл к экрану. */
+export function useNearBottom(enabled: boolean, onReach: () => void) {
+  const anchor = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const node = anchor.current
+    if (!enabled || !node || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onReach()
+      },
+      { rootMargin: '300px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [enabled, onReach])
+
+  return anchor
 }
 
 export type LiveState = 'connecting' | 'live' | 'down'

@@ -333,9 +333,15 @@ def list_tasks(
     unassigned: bool = False,
     parent_id: int | None = None,
     stale_seconds: float | None = None,
+    before_id: int | None = None,
     limit: int = 50,
 ) -> list[TaskSummary]:
-    """Список, свежие первыми. Без `result` — за ним идут в get()."""
+    """Список, свежие первыми. Без `result` — за ним идут в get().
+
+    `before_id` — курсор для подгрузки: следующая страница это всё, что старше
+    последней показанной задачи. Курсор по `id`, а не смещение: пока листают,
+    в очередь прилетают новые задачи, и смещение начало бы пропускать строки.
+    """
     where: list[str] = []
     args: list[Any] = []
 
@@ -368,6 +374,10 @@ def list_tasks(
             raise TaskError(Outcome.validation_error, "stale_seconds не может быть отрицательным")
         where.append("updated_at <= ?")
         args.append(time.time() - stale_seconds)
+
+    if before_id is not None:
+        where.append("id < ?")
+        args.append(int(before_id))
 
     sql = f"SELECT tasks.*, {UNMET_DEPS} AS waiting_on FROM tasks"
     if where:

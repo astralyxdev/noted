@@ -70,6 +70,7 @@ async def list_tasks(
     unassigned: bool = False,
     parent_id: int | None = None,
     stale_seconds: float | None = None,
+    before_id: int | None = None,
     limit: int = 50,
 ):
     found = await run_service(
@@ -81,6 +82,7 @@ async def list_tasks(
         unassigned=unassigned,
         parent_id=parent_id,
         stale_seconds=stale_seconds,
+        before_id=before_id,
         limit=limit,
     )
     return respond(envelope(Outcome.ok, tasks=found, count=len(found)))

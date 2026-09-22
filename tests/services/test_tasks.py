@@ -206,3 +206,22 @@ def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
 
     fresh, _ = service.create({"title": "новая"}, project="noted")
     assert fresh.project == "noted"
+
+
+def test_cursor_walks_the_whole_list_without_gaps():
+    """Курсор по id, а не смещение: пока листают, прилетают новые задачи,
+    и смещение начало бы пропускать строки."""
+    made = [service.create({"n": n})[0].id for n in range(10)]
+
+    page, seen = service.list_tasks(limit=4), []
+    while page:
+        seen.extend(t.id for t in page)
+        page = service.list_tasks(before_id=page[-1].id, limit=4)
+
+    assert seen == sorted(made, reverse=True)
+
+    # новая задача во время листания не сдвигает уже показанное
+    first = service.list_tasks(limit=4)
+    service.create({"n": 100})
+    following = service.list_tasks(before_id=first[-1].id, limit=4)
+    assert not {t.id for t in following} & {t.id for t in first}

@@ -74,6 +74,7 @@ async def get_tasks(
     unassigned: bool = False,
     parent_id: int | None = None,
     stale_seconds: float | None = None,
+    before_id: int | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     params: list[tuple[str, Any]] = []
@@ -91,6 +92,8 @@ async def get_tasks(
         params.append(("parent_id", parent_id))
     if stale_seconds is not None:
         params.append(("stale_seconds", stale_seconds))
+    if before_id is not None:
+        params.append(("before_id", before_id))
     params.append(("limit", limit))
     return _check(await request("GET", "/api/tasks", params=params))
 

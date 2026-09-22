@@ -94,7 +94,7 @@ export type Filters = {
 
 export const NONE = '__none__'
 
-function listQuery(filters: Filters): string {
+function listQuery(filters: Filters, page: PageOptions): string {
   const query = new URLSearchParams()
   filters.status.forEach((s) => query.append('status', s))
   if (filters.project === NONE) query.set('unscoped', 'true')
@@ -102,13 +102,20 @@ function listQuery(filters: Filters): string {
   if (filters.assignee === NONE) query.set('unassigned', 'true')
   else if (filters.assignee) query.set('assignee_id', filters.assignee)
   if (filters.stale) query.set('stale_seconds', String(filters.stale))
-  query.set('limit', String(filters.limit))
+  if (page.beforeId) query.set('before_id', String(page.beforeId))
+  query.set('limit', String(page.limit ?? filters.limit))
   return query.toString()
 }
 
+export type PageOptions = {
+  limit?: number
+  /** Курсор: следующая порция — всё, что старше этой задачи. */
+  beforeId?: number
+}
+
 export const api = {
-  async list(filters: Filters): Promise<TaskSummary[]> {
-    return (await call(`/api/tasks?${listQuery(filters)}`)).tasks ?? []
+  async list(filters: Filters, page: PageOptions = {}): Promise<TaskSummary[]> {
+    return (await call(`/api/tasks?${listQuery(filters, page)}`)).tasks ?? []
   },
 
   async overview(project: string | null) {

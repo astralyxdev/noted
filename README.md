@@ -111,7 +111,7 @@ set_status(task_id=42, status="done", result={"passed": 40},
 | Инструмент | Назначение |
 |---|---|
 | `set_task(task, project, assignee_id, parent_id, key, created_by, priority, max_attempts, depends_on)` | поставить задачу |
-| `get_tasks(assignee_id, status, project, unscoped, unassigned, parent_id, stale_seconds, limit)` | список с фильтрами |
+| `get_tasks(assignee_id, status, project, unscoped, unassigned, parent_id, stale_seconds, before_id, limit)` | список с фильтрами и курсором |
 | `get_task(task_id, with_events)` | одна задача целиком, вместе с `result` и журналом |
 | `set_status(task_id, status, result, if_status, assignee_id)` | сменить статус и приложить результат |
 | `claim_task(assignee_id, project, timeout_s, lease_s)` | атомарно забрать задачу в аренду |
@@ -190,7 +190,8 @@ set_status(task_id=42, status="done", result={"passed": 40},
 React + TypeScript на [astralyx-ui](https://ui.astralyx.dev), собирается Vite и отдаётся ядром
 с корня. Работает поверх того же `/api`, что и агенты.
 
-- Таблица задач со статусами, проектами, исполнителями и меню действий в строке.
+- Таблица задач со статусами, проектами, исполнителями и меню действий в строке; длинные списки
+  подгружаются порциями по мере скролла.
 - Фильтры по статусу, проекту, исполнителю и «не обновлялась дольше N»; состояние живёт
   в query-строке, поэтому ссылкой на отфильтрованный вид можно поделиться.
 - Счётчики считаются внутри выбранного проекта, а не по всей базе.

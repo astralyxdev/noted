@@ -235,7 +235,8 @@ set_task(task[JSON object], project[string/null], assignee_id[UUIDv4/String/Inte
     -> {ok, outcome: created|exists|validation_error|parent_not_found, task}
 
 get_tasks(assignee_id[.../null], status[string/list/null], project[string/null], unscoped[bool],
-          unassigned[bool], parent_id[int/null], stale_seconds[number/null], limit[int=50])
+          unassigned[bool], parent_id[int/null], stale_seconds[number/null],
+          before_id[int/null], limit[int=50])
     -> {ok, outcome: ok|validation_error, tasks[list], count[int]}
 
 get_task(task_id, with_events[bool=false])
@@ -255,7 +256,9 @@ heartbeat(task_id, assignee_id, lease_s[number/null])
 `set_task` — при совпадении `key` с существующей задачей новая не создаётся: `outcome="exists"`,
 в `task` возвращается старая. Агент по коду отличает «создал» от «уже было» и не делает работу дважды.
 
-`get_tasks` — сортировка по `id` убыванием (свежие первыми). `result` в списке не отдаётся, только
+`get_tasks` — сортировка по `id` убыванием (свежие первыми). `before_id` — курсор постраничной
+выдачи: следующая порция это всё, что старше указанного id. Смещения нет намеренно — пока листают,
+в очередь прилетают новые задачи, и смещение начало бы пропускать строки. `result` в списке не отдаётся, только
 через `get_task`: иначе выдача из 50 задач сжигает контекст агента. `status` принимает строку или
 список (`["pending","in_progress"]` = всё открытое). `project` сужает до одного проекта,
 `unscoped=true` — только задачи без проекта, `unassigned=true` — только общий пул. `stale_seconds` —
@@ -284,6 +287,8 @@ React + TypeScript на [astralyx-ui](https://ui.astralyx.dev), Vite собир�
 умеет дэшборд, умеет агент.
 
 - **Список задач** — таблица с колонками `#`, статус, проект, задача, исполнитель, обновлена.
+  Подгружается порциями по 50 по мере скролла; живое обновление перечитывает уже открытое окно
+  (до 500 строк), а хвост за ним остаётся как загрузился — это старые задачи, они почти не меняются.
   Статус — цветной бейдж; истёкшая аренда, ожидание зависимостей, номер попытки и ненулевой
   приоритет видны прямо в строке. Действия — меню: открыть или перевести в любой статус.
 - **Фильтры** — чипы статусов со счётчиками (мультивыбор) плюс выбор проекта, исполнителя и

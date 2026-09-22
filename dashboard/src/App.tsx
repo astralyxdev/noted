@@ -15,11 +15,13 @@ import { TaskDialog } from '@/parts/TaskDialog'
 import { TaskTable } from '@/parts/TaskTable'
 import { cn } from '@/lib/utils'
 import { isStale } from '@/lib/format'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   openTaskFromUrl,
   useDashboard,
   useFilters,
   useLive,
+  useNearBottom,
   useTicker,
   useUrlSync,
 } from '@/hooks'
@@ -37,7 +39,8 @@ export function App() {
   const [connecting, setConnecting] = useState(false)
   const [revision, setRevision] = useState(0)
 
-  const { tasks, stats, projects, assignees, error, pending, refresh } = useDashboard(filters)
+  const { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh } =
+    useDashboard(filters)
   const { toast } = useToast()
   useTicker()
   useUrlSync(filters, openTask)
@@ -48,6 +51,7 @@ export function App() {
   }, [refresh])
 
   const live = useLive(reload)
+  const bottom = useNearBottom(more && !pending, loadMore)
 
   const changeStatus = useCallback(
     async (id: number, status: Status) => {
@@ -160,11 +164,21 @@ export function App() {
           onCompose={() => setComposing(true)}
         />
 
+        {/* Якорь подгрузки: пересёк экран — тянем следующую порцию. */}
+        {more && <div ref={bottom} aria-hidden="true" className="h-1" />}
+
+        {loadingMore && (
+          <div className="flex flex-col gap-2" aria-live="polite">
+            <Skeleton className="h-11 w-full" />
+            <Skeleton className="h-11 w-full" />
+          </div>
+        )}
+
         <p className="text-muted-foreground flex justify-between font-mono text-xs">
           <span>
             показано {tasks.length} из {stats.total}
           </span>
-          <span>лимит {filters.limit}</span>
+          {!more && tasks.length > 0 && <span>всё показано</span>}
         </p>
       </main>
 
