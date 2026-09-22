@@ -64,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_queue    ON tasks(status, assignee_id, prio
 CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project  ON tasks(project, status, id);
 CREATE INDEX IF NOT EXISTS idx_tasks_lease    ON tasks(status, lease_expires);
+CREATE INDEX IF NOT EXISTS idx_tasks_creator  ON tasks(created_by, created_at);
 CREATE INDEX IF NOT EXISTS idx_deps_reverse   ON task_deps(depends_on_id);
 CREATE INDEX IF NOT EXISTS idx_events_task    ON task_events(task_id, id);
 """

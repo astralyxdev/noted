@@ -62,6 +62,24 @@ def retry_cap_s() -> float:
     return _env_float("NOTED_RETRY_CAP_S", 300.0)
 
 
+def create_limit() -> int:
+    """Сколько задач один автор может поставить за окно. 0 — без ограничения.
+
+    Смысл не в квотах, а в предохранителе: очередь открыта, ставить может кто
+    угодно, и зациклившийся агент зальёт её тысячей задач за секунды. Предел
+    взят с запасом, чтобы честная декомпозиция работы в сотню подзадач прошла,
+    а патология — нет.
+    """
+    try:
+        return max(0, int(os.environ.get("NOTED_CREATE_LIMIT", "") or 300))
+    except ValueError:
+        return 300
+
+
+def create_window_s() -> float:
+    return _env_float("NOTED_CREATE_WINDOW_S", 60.0)
+
+
 def _backoff(attempt: int) -> float:
     return min(retry_base_s() * (2 ** max(attempt - 1, 0)), retry_cap_s())
 
@@ -231,6 +249,26 @@ def create(
 
     now = time.time()
     with database.transaction() as conn:
+        # Идемпотентный повтор ничего не создаёт, поэтому и лимитом не режется.
+        if key is not None:
+            already = conn.execute("SELECT * FROM tasks WHERE key = ?", (key,)).fetchone()
+            if already is not None:
+                return _task(conn, already), False
+
+        limit = create_limit()
+        if limit:
+            window = create_window_s()
+            recent = conn.execute(
+                f"SELECT COUNT(*) AS n FROM tasks WHERE created_at > ? AND created_by IS {'NOT NULL AND created_by = ?' if creator else 'NULL'}",
+                (now - window, creator) if creator else (now - window,),
+            ).fetchone()["n"]
+            if recent >= limit:
+                who = creator or "без автора"
+                raise TaskError(
+                    Outcome.rate_limited,
+                    f"{who}: {recent} задач за последние {int(window)} с при пределе {limit} — притормозите",
+                )
+
         if parent_id is not None and _fetch(conn, parent_id) is None:
             raise TaskError(Outcome.parent_not_found, f"родительской задачи {parent_id} не существует")
         for dep in wanted_deps:

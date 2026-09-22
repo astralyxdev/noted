@@ -216,3 +216,15 @@ def test_create_accepts_priority_attempts_and_dependencies(client):
 
     claimed = client.post("/api/tasks/claim", json={"assignee_id": "agent-1"}).json()
     assert claimed["task"]["id"] == first["id"], "зависимая задача ждёт, несмотря на приоритет"
+
+
+def test_flood_is_answered_with_429(client, monkeypatch):
+    monkeypatch.setenv("NOTED_CREATE_LIMIT", "2")
+
+    for n in range(2):
+        assert client.post("/api/tasks", json={"task": {"n": n}, "created_by": "agent-loop"}).status_code == 201
+
+    response = client.post("/api/tasks", json={"task": {"n": 99}, "created_by": "agent-loop"})
+    assert response.status_code == 429
+    assert response.json()["outcome"] == "rate_limited"
+    assert client.get("/api/tasks").json()["count"] == 2

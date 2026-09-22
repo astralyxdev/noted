@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from api.models.envelope import HARD_ERRORS as _HARD_OUTCOMES
+
 SET_TASK = """Поставить задачу.
 
 task — произвольный JSON-объект с описанием работы. project задаёт скоуп:
@@ -78,4 +80,7 @@ HEARTBEAT = """Продлить аренду задачи: «я жив и всё
 
 #: Исходы, которые агент должен увидеть как ошибку инструмента, а не как результат.
 #: not_found, status_conflict и empty сюда не входят: это штатные ответы.
-HARD_ERRORS = frozenset({"unauthorized", "validation_error", "api_unavailable", "internal_error"})
+#:
+#: Список ровно один и живёт в конверте: два независимых набора уже разъезжались —
+#: rate_limited добавили в конверт, а MCP продолжал отдавать его тихим ответом.
+HARD_ERRORS = frozenset(outcome.value for outcome in _HARD_OUTCOMES)

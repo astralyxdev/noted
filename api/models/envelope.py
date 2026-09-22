@@ -24,6 +24,7 @@ class Outcome(str, Enum):
     not_found = "not_found"
     status_conflict = "status_conflict"
     not_owner = "not_owner"
+    rate_limited = "rate_limited"
     parent_not_found = "parent_not_found"
     unauthorized = "unauthorized"
     validation_error = "validation_error"
@@ -41,6 +42,7 @@ HTTP_STATUS: dict[Outcome, int] = {
     Outcome.not_found: 404,
     Outcome.status_conflict: 409,
     Outcome.not_owner: 409,
+    Outcome.rate_limited: 429,
     Outcome.parent_not_found: 404,
     Outcome.unauthorized: 401,
     Outcome.validation_error: 422,
@@ -54,7 +56,15 @@ SUCCESS = frozenset(
 
 #: Исходы, которые агент должен получить как ошибку инструмента, а не как результат.
 HARD_ERRORS = frozenset(
-    {Outcome.unauthorized, Outcome.validation_error, Outcome.api_unavailable, Outcome.internal_error}
+    {
+        Outcome.unauthorized,
+        Outcome.validation_error,
+        Outcome.api_unavailable,
+        Outcome.internal_error,
+        # Захлебнувшийся агент должен получить исключение, а не тихое «нет»:
+        # иначе цикл, который его туда загнал, продолжит крутиться.
+        Outcome.rate_limited,
+    }
 )
 
 

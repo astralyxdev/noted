@@ -106,3 +106,20 @@ async def test_journal_is_available_to_the_agent(live_server):
 
         without = (await mcp.call_tool("get_task", {"task_id": task_id})).structured_content
         assert "events" not in without
+
+
+async def test_flood_reaches_the_agent_as_an_error(live_server, monkeypatch):
+    """Захлебнувшийся агент должен получить исключение, а не тихое «нет»:
+    иначе цикл, который его туда загнал, продолжит крутиться."""
+    monkeypatch.setenv("NOTED_CREATE_LIMIT", "2")
+
+    async with Client(f"{live_server}/mcp/") as mcp:
+        for n in range(2):
+            await mcp.call_tool("set_task", {"task": {"n": n}, "created_by": "agent-loop"})
+
+        blocked = await mcp.call_tool("set_task", {"task": {"n": 99}, "created_by": "agent-loop"})
+        assert blocked.is_error
+        assert "rate_limited" in str(blocked.content[0].text)
+
+        other = await mcp.call_tool("set_task", {"task": {"n": 1}, "created_by": "agent-other"})
+        assert other.structured_content["outcome"] == "created"
