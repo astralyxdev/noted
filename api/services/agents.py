@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Sequence
@@ -57,7 +56,7 @@ def _hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def _agent(row: sqlite3.Row) -> Agent:
+def _agent(row: database.Row) -> Agent:
     return Agent(
         id=row["id"],
         projects=json.loads(row["projects"]) if row["projects"] else None,
@@ -67,7 +66,7 @@ def _agent(row: sqlite3.Row) -> Agent:
     )
 
 
-def _session(row: sqlite3.Row) -> AgentSession:
+def _session(row: database.Row) -> AgentSession:
     return AgentSession(
         id=row["id"],
         agent_id=row["agent_id"],

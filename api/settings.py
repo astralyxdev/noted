@@ -43,9 +43,25 @@ def _whole(name: str, default: int, minimum: int = 0) -> int:
 
 # ── where things live ────────────────────────────────────────────────────
 
+def database_url() -> str | None:
+    """A PostgreSQL DSN, or None to stay on SQLite.
+
+    This is the switch between the two stores. Empty means SQLite, which keeps
+    a plain `docker run` a single container with nothing to connect to.
+    """
+    return (os.environ.get("NOTED_DB_URL") or "").strip() or None
+
+
 def database_path() -> Path:
+    """Where the SQLite file lives. Ignored when NOTED_DB_URL is set."""
     raw = os.environ.get("NOTED_DB")
     return Path(raw).expanduser() if raw else Path.home() / ".noted" / "tasks.db"
+
+
+def db_pool_size() -> int:
+    """Connections held against PostgreSQL. Services run in a worker thread
+    each, so this is the ceiling on how many can be in the database at once."""
+    return _whole("NOTED_DB_POOL", 10, minimum=1)
 
 
 def ui_dir() -> Path:

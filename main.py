@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import settings
+from api.models import database
 from api.models.envelope import Outcome, body, envelope
 from api.routes import live_router, tasks_router
 from api.routes.mcp import build as build_mcp
@@ -77,6 +78,9 @@ def create_app() -> FastAPI:
                 collector.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await collector
+                # A PostgreSQL pool holds threads of its own; letting the
+                # process exit around them prints noise and leaks connections.
+                database.close()
 
     app = FastAPI(
         title="noted",
@@ -149,7 +153,9 @@ def main() -> None:
     # The application is passed as an object rather than an import string,
     # which guarantees a single process. Several workers would mean several
     # writers to SQLite — exactly the cross-process race this service exists
-    # to remove.
+    # to remove. PostgreSQL would take the writers, but the long-poll and the
+    # event stream are an in-process bus: a second worker would not hear the
+    # first one's tasks appear. One process either way.
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

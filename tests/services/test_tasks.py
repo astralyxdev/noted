@@ -10,6 +10,7 @@ import pytest
 from api.models.envelope import Outcome
 from api.services import tasks as service
 from api.services.tasks import TaskError
+from tests.conftest import sqlite_only
 
 
 def test_create_returns_pending_task():
@@ -175,8 +176,12 @@ def test_claim_inside_a_project_never_reaches_outside_it():
     assert service.claim("agent-1").task == {"n": 2}, "without a scope anything may be taken"
 
 
+@sqlite_only
 def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
-    """A database created before scopes existed must not fall apart."""
+    """A database created before scopes existed must not fall apart.
+
+    The migration by hand is a SQLite matter: PostgreSQL adds a missing column
+    with IF NOT EXISTS and needs no PRAGMA to find out what is there."""
     import sqlite3
 
     from api.models import database

@@ -6,8 +6,9 @@ each one rests on the previous.
 
 ## 0. Stack and layout
 
-The core: Python 3.13, FastAPI with uvicorn, SQLite from the standard library,
-the `mcp` SDK, `httpx`. The dashboard: React and TypeScript on
+The core: Python 3.13, FastAPI with uvicorn, the `mcp` SDK, `httpx`, and one of
+two storage engines — SQLite from the standard library, or PostgreSQL through
+`psycopg` when `NOTED_DB_URL` is set. The dashboard: React and TypeScript on
 [astralyx-ui](https://ui.astralyx.dev), Vite, Tailwind v4. Node is needed only at
 build time — one Python process remains in the runtime.
 
@@ -25,11 +26,14 @@ noted/
 ├── README.md · SPEC.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
 ├── deploy/
 │   ├── Dockerfile               # two stages: Node builds the front, Python serves it
-│   └── docker-compose.yml       # loopback-only port, database in a volume
+│   └── docker-compose.yml       # core + PostgreSQL, loopback-only port, volumes
 ├── api/
 │   ├── settings.py              # the only place the environment is read
 │   ├── models/
-│   │   ├── database.py          # SQLite connection, PRAGMAs, lock, schema, migrations
+│   │   ├── database.py          # picks the store; reading/transaction/locks
+│   │   ├── schema.py            # the tables, written once, rendered per dialect
+│   │   ├── sqlite_store.py      # one connection, one process lock, WAL
+│   │   ├── postgres_store.py    # a pool, row locks, placeholder translation
 │   │   ├── task.py              # pydantic: the task, statuses, request bodies
 │   │   ├── agent.py             # a principal and its session
 │   │   └── envelope.py          # the response envelope, Outcome enum, HTTP mapping
@@ -271,7 +275,7 @@ lifespan and cancelled on shutdown. The collector does not die on a single error
 it logs and carries on.
 
 `routes/tasks.py` holds the routes from the table in `SPEC.md`. Each one:
-pydantic validation, a service call through `anyio.to_thread.run_sync` (sqlite is
+pydantic validation, a service call through `anyio.to_thread.run_sync` (the store is
 synchronous and must not block the event loop), and wrapping into the envelope.
 
 - Error handlers: `TaskError` becomes its own code and envelope;
@@ -456,7 +460,7 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
       update.
 - [ ] The image carries the built frontend but no Node; tasks survive recreating
       the container.
-- [ ] `grep -r "sqlite3\|SELECT" api/routes mcp_adapter` is empty: no SQL escaped
+- [ ] `grep -r "sqlite3\|psycopg\|SELECT" api/routes mcp_adapter` is empty: no SQL escaped
       the services.
 
 ## Risks and answers
@@ -464,7 +468,9 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | Risk | Answer |
 |---|---|
 | Several uvicorn workers bring back the cross-process race | `workers=1` in code, a comment, and a checklist item |
-| Synchronous sqlite blocks the event loop | every service call goes through `anyio.to_thread.run_sync` |
+| A synchronous store blocks the event loop | every service call goes through `anyio.to_thread.run_sync` |
+| Two engines, two schemas that drift | the tables are written once and rendered per dialect |
+| PostgreSQL loses the guarantees the process lock gave | claims take `FOR UPDATE SKIP LOCKED`, read-then-write takes `FOR UPDATE` |
 | A long poll ties up a connection and a thread | waiting on a `Condition` (the thread stays free), `timeout_s` clamped to 300 s |
 | The MCP session manager is run twice | the application is built by a factory; each one gets its own server |
 | The core is down and the agent hangs | the stdio adapter answers `api_unavailable` with the address in `message` |

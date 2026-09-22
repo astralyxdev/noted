@@ -1,4 +1,29 @@
+# The composed shape: the core and PostgreSQL side by side.
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# For a single container with no database beside it, drop NOTED_DB_URL below
+# (or run the image on its own) and the core falls back to SQLite in /data.
+
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: noted-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-noted}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-noted}
+      POSTGRES_DB: ${POSTGRES_DB:-noted}
+    volumes:
+      - noted-pgdata:/var/lib/postgresql/data
+    # Not published: only the core talks to it, over the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-noted} -d ${POSTGRES_DB:-noted}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   noted:
     build:
       context: ..
@@ -6,14 +31,20 @@ services:
     image: noted:latest
     container_name: noted
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Published on the loopback only: the dashboard and API stay off the network
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
       - noted-data:/data
     environment:
+      NOTED_DB_URL: postgresql://${POSTGRES_USER:-noted}:${POSTGRES_PASSWORD:-noted}@postgres:5432/${POSTGRES_DB:-noted}
       # Set this if the core is exposed: then /api and /mcp require the header
       NOTED_TOKEN: ${NOTED_TOKEN:-}
 
 volumes:
+  noted-pgdata:
+  # Kept for the SQLite fallback: with NOTED_DB_URL removed the core writes here.
   noted-data:

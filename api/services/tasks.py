@@ -4,12 +4,16 @@ The module knows nothing about FastAPI on purpose: it returns data and raises
 TaskError, and turning that into HTTP is the delivery layer's job. That is why
 the same code serves the JSON API, MCP, the dashboard, and tests that never
 start the application.
+
+It knows nothing about the engine either. One dialect is written here —
+`?` and `:name` placeholders, SQL both SQLite and PostgreSQL accept — and the
+store underneath renders it. The single place the two differ is the row lock a
+claim takes, and that arrives as `database.claim_lock()`.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -90,7 +94,7 @@ UNMET_DEPS = """(SELECT COUNT(*) FROM task_deps d JOIN tasks p ON p.id = d.depen
                   WHERE d.task_id = tasks.id AND p.status <> 'done')"""
 
 
-def _fields(row: sqlite3.Row) -> dict[str, Any]:
+def _fields(row: database.Row) -> dict[str, Any]:
     keys = row.keys()
     return {
         "waiting_on": row["waiting_on"] if "waiting_on" in keys else 0,
@@ -112,7 +116,7 @@ def _fields(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _task(conn: sqlite3.Connection, row: sqlite3.Row) -> Task:
+def _task(conn: database.Connection, row: database.Row) -> Task:
     deps = [r["depends_on_id"] for r in conn.execute(
         "SELECT depends_on_id FROM task_deps WHERE task_id = ? ORDER BY depends_on_id", (row["id"],)
     )]
@@ -128,11 +132,11 @@ def _task(conn: sqlite3.Connection, row: sqlite3.Row) -> Task:
     )
 
 
-def _summary(row: sqlite3.Row) -> TaskSummary:
+def _summary(row: database.Row) -> TaskSummary:
     return TaskSummary(**_fields(row))
 
 
-def _event(row: sqlite3.Row) -> TaskEvent:
+def _event(row: database.Row) -> TaskEvent:
     return TaskEvent(
         id=row["id"],
         task_id=row["task_id"],
@@ -145,12 +149,16 @@ def _event(row: sqlite3.Row) -> TaskEvent:
     )
 
 
-def _fetch(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+def _fetch(conn: database.Connection, task_id: int, lock: bool = False) -> database.Row | None:
+    """One task by id. `lock` holds the row for the rest of the transaction,
+    and every path that reads a task in order to decide whether to write it
+    asks for that — otherwise the decision can be stale by the time it lands."""
+    sql = "SELECT * FROM tasks WHERE id = ?" + (database.row_lock() if lock else "")
+    return conn.execute(sql, (task_id,)).fetchone()
 
 
 def _log(
-    conn: sqlite3.Connection,
+    conn: database.Connection,
     task_id: int,
     event: str,
     *,
@@ -235,24 +243,29 @@ def create(
             if _fetch(conn, dep) is None:
                 raise TaskError(Outcome.validation_error, f"dependency {dep} does not exist")
 
-        cur = conn.execute(
+        # RETURNING rather than lastrowid: it is the one way to read the new id
+        # that both engines agree on, and on a key collision it returns nothing,
+        # which is also the answer to "did the insert happen".
+        inserted = conn.execute(
             """
             INSERT INTO tasks (task, status, project, assignee_id, created_by, parent_id, key,
                                priority, max_attempts, created_at, updated_at)
             VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(key) DO NOTHING
+            RETURNING id
             """,
             (payload, scope, assignee, creator, parent_id, key, int(priority), max_attempts, now, now),
-        )
-        if cur.rowcount == 0:
+        ).fetchone()
+        if inserted is None:
             existing = conn.execute("SELECT * FROM tasks WHERE key = ?", (key,)).fetchone()
             return _task(conn, existing), False
 
-        task_id = cur.lastrowid
+        task_id = inserted["id"]
         # No cycle can form: nothing references a brand new task yet.
         for dep in wanted_deps:
             conn.execute(
-                "INSERT OR IGNORE INTO task_deps (task_id, depends_on_id) VALUES (?, ?)", (task_id, dep)
+                "INSERT INTO task_deps (task_id, depends_on_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                (task_id, dep),
             )
         _log(
             conn,
@@ -391,7 +404,7 @@ def list_tasks(
 # ─────────────────────────── changing state ──────────────────────────────
 
 
-def _unblock_dependents(conn: sqlite3.Connection, task_id: int, now: float) -> list[int]:
+def _unblock_dependents(conn: database.Connection, task_id: int, now: float) -> list[int]:
     """A predecessor closed successfully: unblock whoever has nothing left to wait for."""
     rows = conn.execute(
         """
@@ -412,7 +425,7 @@ def _unblock_dependents(conn: sqlite3.Connection, task_id: int, now: float) -> l
     return freed
 
 
-def _block_dependents(conn: sqlite3.Connection, task_id: int, reason: str, now: float) -> list[int]:
+def _block_dependents(conn: database.Connection, task_id: int, reason: str, now: float) -> list[int]:
     """A predecessor failed or was cancelled: its waiters will not move on their own.
 
     Blocking walks the whole chain. Marking only the direct waiters would leave
@@ -480,7 +493,7 @@ def set_status(
     payload = _dump(result, "result") if result is not None else None
 
     with database.transaction() as conn:
-        row = _fetch(conn, task_id)
+        row = _fetch(conn, task_id, lock=True)
         if row is None:
             return Outcome.not_found, None
         if expected is not None and row["status"] != expected.value:
@@ -588,8 +601,16 @@ def claim(
     if allowed is not None and scope is not None and scope not in allowed:
         raise TaskError(Outcome.forbidden, f"project {scope} is outside the key's scope")
 
+    # The scope is spelled into the SQL rather than passed as a parameter that
+    # is only ever compared to NULL: PostgreSQL cannot infer a type for one of
+    # those, and there is nothing to infer it from.
+    params: dict[str, Any] = {"me": assignee, "now": now}
+    project_sql = ""
+    if scope is not None:
+        params["scope"] = scope
+        project_sql = " AND t.project = :scope"
+
     scope_sql = ""
-    params: dict[str, Any] = {"me": assignee, "scope": scope, "now": now}
     if allowed is not None and scope is None:
         # A scoped key takes from its own projects — and from the shared pool.
         names = {f"p{i}": name for i, name in enumerate(allowed)}
@@ -603,14 +624,13 @@ def claim(
             SELECT id FROM tasks AS t
              WHERE t.status = 'pending'
                AND (t.assignee_id IS NULL OR t.assignee_id = :me)
-               AND (:scope IS NULL OR t.project = :scope)
-               {scope_sql}
+               {project_sql}{scope_sql}
                AND (t.retry_after IS NULL OR t.retry_after <= :now)
                AND NOT EXISTS (
                      SELECT 1 FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id
                       WHERE d.task_id = t.id AND p.status <> 'done')
              ORDER BY t.priority DESC, (t.assignee_id IS NULL), t.id
-             LIMIT 1
+             LIMIT 1{database.claim_lock()}
             """,
             params,
         ).fetchone()
@@ -655,7 +675,7 @@ def heartbeat(
     now = time.time()
 
     with database.transaction() as conn:
-        row = _fetch(conn, task_id)
+        row = _fetch(conn, task_id, lock=True)
         if row is None:
             return Outcome.not_found, None
         if row["status"] != Status.in_progress.value:
@@ -708,7 +728,8 @@ def reap_expired() -> list[int]:
                             OR s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale)
                      )
                    )
-            """,
+            {claim_lock}
+            """.format(claim_lock=database.claim_lock().replace(" FOR UPDATE", " FOR UPDATE OF t")),
             {"now": now, "stale": now - ttl},
         ).fetchall()
 

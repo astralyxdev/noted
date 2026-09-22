@@ -1,4 +1,8 @@
-# noted: a FastAPI + SQLite core and a dashboard on astralyx-ui.
+# noted: a FastAPI core and a dashboard on astralyx-ui.
+#
+# The image carries both storage engines. On its own it runs on SQLite in the
+# /data volume; set NOTED_DB_URL and the same image runs on PostgreSQL, which
+# is what deploy/docker-compose.yml does.
 # Build from the project root:  docker build -f deploy/Dockerfile -t noted .
 
 # ─────────────────────────── building the dashboard ────────────────────

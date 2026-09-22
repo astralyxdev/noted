@@ -9,10 +9,12 @@ Three thin layers:
 
 ```
 agents ──────── MCP over HTTP (/mcp) ───────>┌──────────────────────────────┐
-                                             │      FastAPI + SQLite        │
+                                             │           FastAPI            │
 agents ─MCP(stdio)─> adapter ──HTTP─────────>│ API · MCP · SSE · dashboard  │
                                              │                              │
-browser ──── static + /api + SSE ───────────>└──────────────────────────────┘
+browser ──── static + /api + SSE ───────────>└───────────────┬──────────────┘
+                                                             │
+                                              SQLite file ───┴─── PostgreSQL
 ```
 
 1. **The FastAPI core** owns the database. All the logic and all the SQL live here.
@@ -33,11 +35,12 @@ file of the same name in each layer. The layout and the rules are in
 `TECHNICAL_DOCUMENTATION.md`.
 
 What this buys in terms of races: if every agent ran its own process and they
-all wrote to one database file, the race would be cross-process. There is
-exactly one writer. That alone is not enough, though — requests inside the
-process are still concurrent, so the serialisation is explicit: one SQLite
-connection under a lock, `uvicorn --workers 1`. Several workers bring the
-original problem back.
+all wrote to one database file, the race would be cross-process. Funnelling
+every write through the core removes that. Requests inside the core are still
+concurrent, and how they are serialised is the one thing the two engines do
+differently — a lock in front of one SQLite connection, or row-level locking in
+PostgreSQL. `uvicorn --workers 1` in both cases: the waiting below is an
+in-process bus, and a second worker would not hear the first one's tasks.
 
 Waiting stops being polling as a bonus. Two `asyncio.Condition`s per process:
 `available` wakes agents on `claim`, `changed` wakes open dashboards. They are
@@ -46,12 +49,26 @@ there is no reason to wake agents that are waiting for work.
 
 ### Storage
 
-SQLite, one file, WAL mode. The default path is `~/.noted/tasks.db`, overridden
-by `NOTED_DB`; in the container it is a volume mounted at `/data`. Columns added
-after the first version of the schema are filled in when the database is opened:
-an older file neither breaks nor needs a manual migration. WAL stays on for
-outside readers (`sqlite3` in a neighbouring terminal), while the writer remains
-single.
+Two engines, one set of tables. `NOTED_DB_URL` chooses: empty means SQLite,
+a DSN means PostgreSQL. The services know neither — they write one dialect of
+SQL and ask for a transaction, and a store module underneath renders it.
+
+**SQLite** is the default: one file, WAL mode, `~/.noted/tasks.db` by default
+and a volume at `/data` in the container. Nothing to install and nothing to
+connect to. Writers are serialised by a single connection behind a process
+lock; WAL stays on so a `sqlite3` in a neighbouring terminal can still read.
+
+**PostgreSQL** is what `docker compose` brings up, and what a swarm wants. The
+process lock disappears and the engine does the work instead: a claim takes its
+row with `FOR UPDATE SKIP LOCKED`, so two agents claiming in the same instant
+take two different tasks rather than one of them being told the queue is empty,
+and every read-then-write decision — compare-and-set, ownership, fencing —
+holds its row with `FOR UPDATE` until it has written.
+
+The schema installs itself on startup under both, and columns added after the
+first version are filled in then: an existing database neither breaks nor needs
+a manual migration. Moving between the engines is not automatic — it points the
+core at a different database, it does not carry the tasks over.
 
 Network: the core listens on `127.0.0.1:8787` (`NOTED_API` on the adapter side).
 An optional `NOTED_TOKEN` is checked by middleware on `/api` and `/mcp`; the

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -12,14 +13,40 @@ from api.models import database
 from api.utils import events
 
 
+#: Point this at a PostgreSQL DSN to run the whole suite against that engine
+#: instead of SQLite. The tests themselves know nothing about it — which is the
+#: point: the same behaviour has to hold on both stores.
+TEST_DB_URL = (os.environ.get("NOTED_TEST_DB_URL") or "").strip()
+
+postgres_only = pytest.mark.skipif(not TEST_DB_URL, reason="needs NOTED_TEST_DB_URL")
+sqlite_only = pytest.mark.skipif(bool(TEST_DB_URL), reason="SQLite-specific")
+
+
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path, monkeypatch):
     """A fresh database and clean Conditions per test, so tests never see each other."""
-    monkeypatch.setenv("NOTED_DB", str(tmp_path / "tasks.db"))
     monkeypatch.delenv("NOTED_TOKEN", raising=False)
     monkeypatch.delenv("NOTED_KEY", raising=False)
+    if TEST_DB_URL:
+        # The pool is kept between tests and the tables are emptied instead:
+        # reconnecting per test costs more than the whole suite.
+        monkeypatch.setenv("NOTED_DB_URL", TEST_DB_URL)
+        database.wipe()
+        events.reset()
+        yield
+        return
+    monkeypatch.delenv("NOTED_DB_URL", raising=False)
+    monkeypatch.setenv("NOTED_DB", str(tmp_path / "tasks.db"))
     database.close()
     events.reset()
+    yield
+    database.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def close_the_store():
+    """A PostgreSQL pool runs threads of its own; pytest must not exit around
+    them, or the run ends in a page of warnings it cannot act on."""
     yield
     database.close()
 

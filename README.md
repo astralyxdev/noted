@@ -3,16 +3,23 @@
 A task manager for agents. It queues work, hands each task to exactly one
 executor, survives the death of any of them, and shows who is doing what.
 
-The core is a single FastAPI process over SQLite. An MCP server comes up with
-it on the same port, so an agent can connect right after `up -d`. People look
-at the web dashboard, and all of it runs through the same HTTP API.
+The core is a single FastAPI process. An MCP server comes up with it on the
+same port, so an agent can connect right after `up -d`. People look at the web
+dashboard, and all of it runs through the same HTTP API.
+
+Storage is a choice of two and the code is the same either way: SQLite in a
+file when you want one container and nothing to install, PostgreSQL when a
+swarm of agents makes a single writer the thing you are waiting on. `compose`
+brings up PostgreSQL; the image on its own falls back to SQLite.
 
 ```
 agents ──────── MCP over HTTP (/mcp) ───────>┌──────────────────────────────┐
-                                             │      FastAPI + SQLite        │
+                                             │           FastAPI            │
 agents ─MCP(stdio)─> adapter ──HTTP─────────>│ API · MCP · SSE · dashboard  │
                                              │                              │
-browser ──── static + /api + SSE ───────────>└──────────────────────────────┘
+browser ──── static + /api + SSE ───────────>└───────────────┬──────────────┘
+                                                             │
+                                              SQLite file ───┴─── PostgreSQL
 ```
 
 ## Why
@@ -68,17 +75,25 @@ docker compose -f deploy/docker-compose.yml up -d
 The dashboard is at <http://127.0.0.1:8787/>, the API docs at `/docs`, liveness
 at `/healthz`.
 
-The image builds in two stages: Node builds the frontend, the Python image takes
-the finished static files — there is no Node in the runtime. The database lives
-in the `noted-data` volume, so rebuilding the image does not touch it. The port
-is published on the loopback only.
+That brings up two containers: the core and PostgreSQL. The database is not
+published — only the core talks to it — and its files live in the `noted-pgdata`
+volume, so rebuilding the image does not touch them.
 
-Without compose:
+The image builds in two stages: Node builds the frontend, the Python image takes
+the finished static files — there is no Node in the runtime. The port is
+published on the loopback only.
+
+One container instead of two, on SQLite:
 
 ```bash
 docker build -f deploy/Dockerfile -t noted .
 docker run -d --name noted -p 127.0.0.1:8787:8787 -v noted-data:/data noted
 ```
+
+Nothing else changes: same API, same MCP tools, same dashboard. The choice is
+one variable — `NOTED_DB_URL` set means PostgreSQL, empty means the SQLite file
+at `NOTED_DB`. It is read at startup, so moving an installation from one to the
+other is a restart, not a rebuild (the tasks do not follow; see **Data** below).
 
 ## Connecting an agent
 
@@ -281,7 +296,9 @@ the file, so `docker run -e` and `export` override `.env`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NOTED_DB` | `~/.noted/tasks.db`, `/data/tasks.db` in the image | the database file |
+| `NOTED_DB_URL` | empty | a PostgreSQL DSN; empty keeps the SQLite file |
+| `NOTED_DB` | `~/.noted/tasks.db`, `/data/tasks.db` in the image | the SQLite file, ignored when `NOTED_DB_URL` is set |
+| `NOTED_DB_POOL` | `10` | connections held against PostgreSQL |
 | `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
 | `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
 | `NOTED_API` | `http://127.0.0.1:8787` | where the stdio adapter looks for the core |
@@ -296,10 +313,12 @@ the file, so `docker run -e` and `export` override `.env`.
 
 ## Operating it
 
-**A single process is a requirement, not a preference.** There is exactly one
-writer; several uvicorn workers would mean several writers and bring back the
-cross-process race this service exists to remove. `workers=1` is baked into the
-code and needs no overriding.
+**A single process is a requirement, not a preference.** On SQLite there is
+exactly one writer, and several uvicorn workers would mean several writers.
+PostgreSQL would take them happily — but the long poll and the event stream are
+an in-process bus, so a second worker would not hear the first one's tasks
+appear. `workers=1` either way; it is baked into the code and needs no
+overriding.
 
 **Network.** Inside the container the process listens on `0.0.0.0`, and only
 `127.0.0.1:8787` is published. If the core really has to be reachable from
@@ -309,11 +328,23 @@ elsewhere, hand out per-agent keys rather than a shared token.
 door — with `NOTED_TOKEN` set the browser asks for it once and keeps a pass in a
 cookie. There are no roles inside the dashboard: whoever signs in is an admin.
 
-**Data.** The database is one SQLite file in WAL mode, living in a volume. Back
-it up by copying the directory with the container stopped, or with
-`sqlite3 tasks.db ".backup out.db"` while it runs. Columns added in newer
-versions are filled in when the database is opened: an older file neither breaks
-nor needs a manual migration.
+**Data.** On SQLite it is one file in WAL mode, living in a volume: back it up
+by copying the directory with the container stopped, or with
+`sqlite3 tasks.db ".backup out.db"` while it runs. On PostgreSQL it is
+`pg_dump`, and the usual arrangements for a database apply.
+
+Either way the schema installs itself on startup and columns added in newer
+versions are filled in then: an existing database neither breaks nor needs a
+manual migration. What is not automatic is moving between the two engines —
+switching `NOTED_DB_URL` points the core at a different database, it does not
+carry the tasks across.
+
+**Choosing between them.** SQLite is the default because most queues are small
+and one file that needs nothing installed is worth a great deal. PostgreSQL
+earns its second container when agents claim concurrently: under the file every
+writer queues behind one process lock, while PostgreSQL hands two claimers two
+different rows at the same instant (`FOR UPDATE SKIP LOCKED`). The measured
+difference is in [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
 
 **A guard rail.** The queue is open, so creation is capped per author
 (`NOTED_CREATE_LIMIT` per `NOTED_CREATE_WINDOW_S`). It catches a looping agent
@@ -360,6 +391,7 @@ the same code.
 
 ```
 api/          settings.py · models/ · routes/ (JSON, SSE, MCP) · services/ · utils/
+              models/ holds the schema once and a store per engine
 mcp_adapter/  the stdio transport for clients without HTTP, no database access
 dashboard/    React on astralyx-ui, built into dist/
 deploy/       Dockerfile (two stages) and docker-compose.yml
