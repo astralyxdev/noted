@@ -27,7 +27,7 @@ export function LoginScreen({ onEntered }: { onEntered: () => void }) {
       setError(null)
       onEntered()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'не удалось войти')
+      setError(cause instanceof Error ? cause.message : 'could not sign in')
     } finally {
       setBusy(false)
     }
@@ -42,7 +42,7 @@ export function LoginScreen({ onEntered }: { onEntered: () => void }) {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="token">Токен</Label>
+          <Label htmlFor="token">Token</Label>
           <Input
             id="token"
             type="password"
@@ -56,13 +56,13 @@ export function LoginScreen({ onEntered }: { onEntered: () => void }) {
             <p className="text-destructive text-xs">{error}</p>
           ) : (
             <p className="text-muted-foreground text-xs">
-              Тот же токен, что задан ядру в <code className="font-mono">NOTED_TOKEN</code>.
+              The same token the core was given in <code className="font-mono">NOTED_TOKEN</code>.
             </p>
           )}
         </div>
 
         <Button type="submit" disabled={!token.trim() || busy}>
-          Войти
+          Sign in
         </Button>
       </form>
     </div>

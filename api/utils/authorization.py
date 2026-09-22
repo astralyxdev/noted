@@ -127,7 +127,7 @@ def resolve(request: Request) -> Principal | JSONResponse:
     # The dashboard cannot send the header, so it has its own door and cookie.
     if _browser_admin(request):
         return Principal(is_admin=True)
-    return _denied(f"нужен действующий ключ в заголовке {HEADER}")
+    return _denied(f"a valid key is required in the {HEADER} header")
 
 
 def _denied(message: str) -> JSONResponse:

@@ -57,11 +57,11 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
       try {
         const extra: unknown = JSON.parse(payload)
         if (typeof extra !== 'object' || extra === null || Array.isArray(extra)) {
-          throw new Error('нужен JSON-объект, а не массив или значение')
+          throw new Error('a JSON object is required, not an array or a value')
         }
         task = { ...task, ...(extra as Record<string, unknown>) }
       } catch (cause) {
-        setPayloadError(cause instanceof Error ? cause.message : 'не разобрать JSON')
+        setPayloadError(cause instanceof Error ? cause.message : 'could not parse JSON')
         return
       }
     }
@@ -76,12 +76,12 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
         priority: Number(priority) || 0,
         max_attempts: attempts.trim() ? Math.max(1, Number(attempts)) : null,
       })
-      toast({ title: `Задача #${created.id} поставлена`, color: 'green' })
+      toast({ title: `Task #${created.id} created`, color: 'green' })
       onOpenChange(false)
       onCreated()
     } catch (cause) {
       toast({
-        title: 'Не удалось поставить задачу',
+        title: 'Could not create the task',
         description: cause instanceof Error ? cause.message : undefined,
         color: 'destructive',
       })
@@ -95,15 +95,15 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
       <DialogContent size="lg">
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>Новая задача</DialogTitle>
+            <DialogTitle>New task</DialogTitle>
             <DialogDescription>
-              Пустой исполнитель означает общий пул — задачу заберёт первый свободный агент.
+              An empty assignee means the shared pool — the first free agent picks it up.
             </DialogDescription>
           </DialogHeader>
 
           <DialogBody className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="task-title">Что нужно сделать</Label>
+              <Label htmlFor="task-title">What needs doing</Label>
               <Input
                 id="task-title"
                 autoFocus
@@ -111,62 +111,62 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
                 maxLength={200}
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
-                placeholder="Проиндексировать репозиторий"
+                placeholder="Index the repository"
               />
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="task-project">Проект</Label>
+                <Label htmlFor="task-project">Project</Label>
                 <Input
                   id="task-project"
                   className="font-mono text-xs"
                   value={scope}
                   onChange={(event) => setScope(event.target.value)}
-                  placeholder="без проекта"
+                  placeholder="no project"
                 />
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="task-assignee">Исполнитель</Label>
+                <Label htmlFor="task-assignee">Assignee</Label>
                 <Input
                   id="task-assignee"
                   className="font-mono text-xs"
                   value={assignee}
                   onChange={(event) => setAssignee(event.target.value)}
-                  placeholder="общий пул"
+                  placeholder="shared pool"
                 />
               </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="task-priority">Приоритет</Label>
+                <Label htmlFor="task-priority">Priority</Label>
                 <Input
                   id="task-priority"
                   type="number"
                   value={priority}
                   onChange={(event) => setPriority(event.target.value)}
                 />
-                <p className="text-muted-foreground text-xs">Больше — раньше выдаётся.</p>
+                <p className="text-muted-foreground text-xs">Higher goes out sooner.</p>
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="task-attempts">Попыток</Label>
+                <Label htmlFor="task-attempts">Attempts</Label>
                 <Input
                   id="task-attempts"
                   type="number"
                   min={1}
                   value={attempts}
                   onChange={(event) => setAttempts(event.target.value)}
-                  placeholder="без повторов"
+                  placeholder="no retries"
                 />
-                <p className="text-muted-foreground text-xs">Провал вернёт задачу в очередь с паузой.</p>
+                <p className="text-muted-foreground text-xs">A failure returns it to the queue after a pause.</p>
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="task-payload">JSON-нагрузка — необязательно</Label>
+              <Label htmlFor="task-payload">JSON payload — optional</Label>
               <Textarea
                 id="task-payload"
                 rows={5}
@@ -181,7 +181,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
                 <p className="text-destructive text-xs">{payloadError}</p>
               ) : (
                 <p className="text-muted-foreground text-xs">
-                  Сливается с заголовком — агент получит один объект.
+                  Merged with the title, so the agent receives one object.
                 </p>
               )}
             </div>
@@ -189,10 +189,10 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
 
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              Отмена
+              Cancel
             </Button>
             <Button type="submit" disabled={!title.trim() || saving}>
-              Поставить
+              Create
             </Button>
           </DialogFooter>
         </form>

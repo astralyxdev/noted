@@ -1,10 +1,10 @@
 """MCP over HTTP — on the same port as the API.
 
-Транспорт streamable-http вместо stdio: ядро уже слушает порт, поэтому агенту
-не нужен отдельный процесс-адаптер. Инструменты зовут те же сервисы, что и
-JSON-роуты, а не ходят по HTTP в самих себя.
+The streamable-http transport instead of stdio: the core already listens on a
+port, so an agent needs no separate adapter process. The tools call the same
+services the JSON routes do rather than looping back over HTTP.
 
-stdio-адаптер остаётся в `mcp_adapter/` для клиентов, которые не умеют HTTP.
+The stdio adapter stays in `mcp_adapter/` for clients that cannot speak HTTP.
 """
 
 from __future__ import annotations
@@ -33,9 +33,9 @@ from api.utils.tool_docs import (
 )
 
 INSTRUCTIONS = (
-    "Таск-менеджер для агентов. Ставьте задачи через set_task, забирайте работу через "
-    "claim_task (timeout_s>0 — ждать появления задачи), отчитывайтесь через set_status. "
-    "Каждый ответ содержит поле outcome — по нему судите об исходе операции."
+    "A task manager for agents. Post work with set_task, take work with claim_task "
+    "(timeout_s>0 waits for a task to appear), report back with set_status. "
+    "Every answer carries an `outcome` field — judge the result by it."
 )
 
 
@@ -51,7 +51,7 @@ def _out(env) -> dict[str, Any]:
     """The envelope on its way out. Hard errors are raised as tool errors."""
     payload = body(env)
     if payload.get("outcome") in HARD_ERRORS:
-        raise ToolError(f"{payload['outcome']}: {payload.get('message') or 'ошибка вызова'}")
+        raise ToolError(f"{payload['outcome']}: {payload.get('message') or 'call failed'}")
     return payload
 
 
@@ -69,7 +69,7 @@ async def set_task(
 ) -> dict[str, Any]:
     who = _who(ctx)
     if who.agent and not who.agent.may_touch(project):
-        return _out(envelope(Outcome.forbidden, f"проект {project} вне скоупа ключа", task=None))
+        return _out(envelope(Outcome.forbidden, f"project {project} is outside the key's scope", task=None))
     try:
         created_task, created = await run_service(
             tasks_service.create,
@@ -124,7 +124,7 @@ async def get_tasks(
 async def get_task(task_id: int, with_events: bool = False, ctx: Context | None = None) -> dict[str, Any]:
     found = await run_service(tasks_service.get, task_id)
     if found is None:
-        return _out(envelope(Outcome.not_found, f"задачи {task_id} не существует", task=None))
+        return _out(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
     if not with_events:
         return _out(envelope(Outcome.ok, task=found))
     log = await run_service(tasks_service.events, task_id)
@@ -159,13 +159,13 @@ async def set_status(
         await (events.notify_new_task() if status == Status.pending.value else events.notify_change())
 
     message = {
-        Outcome.not_found: f"задачи {task_id} не существует",
+        Outcome.not_found: f"task {task_id} does not exist",
         Outcome.status_conflict: (
-            f"ожидался статус {if_status or 'in_progress'}, а задача в "
-            f"{task.status.value if task else ''}; безусловная запись — это force=true"
+            f"expected status {if_status or 'in_progress'}, but the task is "
+            f"{task.status.value if task else ''}; an unconditional write is force=true"
         ),
-        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
-        Outcome.stale_session: "задачу держит другой экземпляр этого агента",
+        Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
+        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return _out(envelope(outcome, message, task=task))
 
@@ -217,10 +217,10 @@ async def heartbeat(
         session_id=who.session_id,
     )
     message = {
-        Outcome.not_found: f"задачи {task_id} не существует",
-        Outcome.status_conflict: f"задача не в работе, а в {task.status.value if task else ''}",
-        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
-        Outcome.stale_session: "задачу держит другой экземпляр этого агента",
+        Outcome.not_found: f"task {task_id} does not exist",
+        Outcome.status_conflict: f"the task is not in progress but {task.status.value if task else ''}",
+        Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
+        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return _out(envelope(outcome, message, task=task))
 

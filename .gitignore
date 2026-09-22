@@ -9,29 +9,27 @@ build/
 .coverage
 htmlcov/
 
-# ── Фронтенд ──────────────────────────────────────────────────────────
+# ── Frontend ──────────────────────────────────────────────────────────
 node_modules/
-# Сборку дэшборда делает Docker (или `npm run build` локально) — в репозитории
-# её держать незачем.
+# The dashboard is built by Docker (or `npm run build` locally); there is no
+# reason to keep the output in the repository.
 dist/
 *.tsbuildinfo
 .vite/
 
-# ── Данные ────────────────────────────────────────────────────────────
-# База и её WAL-файлы: у каждого своя, в том числе демо-базы под рукой.
+# ── Data ──────────────────────────────────────────────────────────────
+# The database and its WAL files: everyone has their own, demo ones included.
 *.db
 *.db-shm
 *.db-wal
 
-# ── Окружение ─────────────────────────────────────────────────────────
+# ── Environment ───────────────────────────────────────────────────────
 .env
 .env.*
 !.env.example
 
-# ── Редакторы и ОС ────────────────────────────────────────────────────
+# ── Editors and OS ────────────────────────────────────────────────────
 .DS_Store
 .idea/
 .vscode/
 *.swp
-
-.hallmark/

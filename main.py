@@ -44,18 +44,18 @@ async def reaper() -> None:
             # in the same pass.
             closed = await run_service(agents_service.expire_sessions)
             if closed:
-                log.info("сессии закрыты по тишине: %s", closed)
+                log.info("sessions closed after silence: %s", closed)
             requeued = await run_service(tasks_service.reap_expired)
-        except Exception:  # noqa: BLE001 — сборщик не должен умирать от одной ошибки
-            log.exception("сборщик аренд споткнулся")
+        except Exception:  # noqa: BLE001 - one failure must not kill the collector
+            log.exception("the lease collector stumbled")
             continue
         if requeued:
-            log.info("аренда истекла, задачи вернулись в очередь: %s", requeued)
+            log.info("leases expired, tasks returned to the queue: %s", requeued)
             await task_events.notify_new_task()
 
         trimmed = await run_service(tasks_service.trim_journal)
         if trimmed:
-            log.info("журнал подрезан: %s записей закрытых задач", trimmed)
+            log.info("journal trimmed: %s entries of closed tasks", trimmed)
 
 
 def ui_dir() -> Path:
@@ -81,7 +81,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="noted",
         version="0.3.0",
-        description="Таск-менеджер для агентов: API, MCP и дэшборд на одном порту",
+        description="A task manager for agents: API, MCP and dashboard on one port",
         lifespan=lifespan,
     )
     app.middleware("http")(token_middleware)
@@ -103,8 +103,8 @@ def create_app() -> FastAPI:
         # FastAPI's own format is overridden: an agent must get the same
         # envelope as everywhere else, not somebody else's shape of answer.
         first = exc.errors()[0] if exc.errors() else {}
-        where = ".".join(str(p) for p in first.get("loc", ())[1:]) or "тело запроса"
-        return respond(envelope(Outcome.validation_error, f"{where}: {first.get('msg', 'некорректный запрос')}"))
+        where = ".".join(str(p) for p in first.get("loc", ())[1:]) or "request body"
+        return respond(envelope(Outcome.validation_error, f"{where}: {first.get('msg', 'malformed request')}"))
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException):
@@ -125,8 +125,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
         incident = uuid.uuid4().hex[:8]
-        log.exception("необработанная ошибка [%s] %s %s", incident, request.method, request.url.path)
-        return respond(envelope(Outcome.internal_error, f"внутренняя ошибка, см. лог: {incident}"))
+        log.exception("unhandled error [%s] %s %s", incident, request.method, request.url.path)
+        return respond(envelope(Outcome.internal_error, f"internal error, see log entry {incident}"))
 
     # The dashboard is mounted last: it takes the root, but only the paths the
     # routers above did not claim.
@@ -134,7 +134,7 @@ def create_app() -> FastAPI:
     if (dist / "index.html").exists():
         app.mount("/", StaticFiles(directory=str(dist), html=True), name="dashboard")
     else:
-        log.warning("дэшборд не собран (%s не найден) — доступен только API", dist / "index.html")
+        log.warning("dashboard is not built (%s missing) - API only", dist / "index.html")
 
     return app
 

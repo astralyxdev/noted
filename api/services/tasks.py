@@ -58,10 +58,10 @@ def _actor(value: ActorId | None, field: str) -> str | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise TaskError(Outcome.validation_error, f"{field} должен быть строкой или числом")
+        raise TaskError(Outcome.validation_error, f"{field} must be a string or a number")
     out = str(value).strip()
     if not out:
-        raise TaskError(Outcome.validation_error, f"{field} не может быть пустым (для «без значения» передайте null)")
+        raise TaskError(Outcome.validation_error, f"{field} must not be empty; pass null when there is no value")
     return out
 
 
@@ -70,14 +70,14 @@ def _status(value: Status | str, field: str = "status") -> Status:
         return Status(value)
     except ValueError:
         allowed = ", ".join(s.value for s in Status)
-        raise TaskError(Outcome.validation_error, f"{field}: ожидалось одно из {allowed}, получено {value!r}") from None
+        raise TaskError(Outcome.validation_error, f"{field}: expected one of {allowed}, got {value!r}") from None
 
 
 def _dump(value: Any, field: str) -> str:
     try:
         return json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
-        raise TaskError(Outcome.validation_error, f"{field} должен сериализоваться в JSON: {exc}") from exc
+        raise TaskError(Outcome.validation_error, f"{field} must serialise to JSON: {exc}") from exc
 
 
 def _lease(value: float | None) -> float:
@@ -197,15 +197,15 @@ def create(
     """Create a task. The second element says whether it was really created:
     a matching `key` returns the existing task so a retry breeds no duplicates."""
     if not isinstance(task, dict):
-        raise TaskError(Outcome.validation_error, "task должен быть JSON-объектом")
+        raise TaskError(Outcome.validation_error, "task must be a JSON object")
     payload = _dump(task, "task")
     scope = _actor(project, "project")
     assignee = _actor(assignee_id, "assignee_id")
     creator = _actor(created_by, "created_by")
     if key is not None and not str(key).strip():
-        raise TaskError(Outcome.validation_error, "key не может быть пустым (для «без ключа» передайте null)")
+        raise TaskError(Outcome.validation_error, "key must not be empty; pass null when there is no key")
     if max_attempts is not None and max_attempts < 1:
-        raise TaskError(Outcome.validation_error, "max_attempts должен быть не меньше 1")
+        raise TaskError(Outcome.validation_error, "max_attempts must be at least 1")
     wanted_deps = sorted({int(d) for d in (depends_on or [])})
 
     now = time.time()
@@ -224,17 +224,17 @@ def create(
                 (now - window, creator) if creator else (now - window,),
             ).fetchone()["n"]
             if recent >= limit:
-                who = creator or "без автора"
+                who = creator or "anonymous"
                 raise TaskError(
                     Outcome.rate_limited,
-                    f"{who}: {recent} задач за последние {int(window)} с при пределе {limit} — притормозите",
+                    f"{who}: {recent} tasks in the last {int(window)}s against a limit of {limit} — slow down",
                 )
 
         if parent_id is not None and _fetch(conn, parent_id) is None:
-            raise TaskError(Outcome.parent_not_found, f"родительской задачи {parent_id} не существует")
+            raise TaskError(Outcome.parent_not_found, f"parent task {parent_id} does not exist")
         for dep in wanted_deps:
             if _fetch(conn, dep) is None:
-                raise TaskError(Outcome.validation_error, f"зависимости {dep} не существует")
+                raise TaskError(Outcome.validation_error, f"dependency {dep} does not exist")
 
         cur = conn.execute(
             """
@@ -342,7 +342,7 @@ def list_tasks(
     if status is not None:
         wanted = [status] if isinstance(status, (str, Status)) else list(status)
         if not wanted:
-            raise TaskError(Outcome.validation_error, "фильтр status не может быть пустым списком")
+            raise TaskError(Outcome.validation_error, "the status filter must not be an empty list")
         values = [_status(s).value for s in wanted]
         where.append(f"status IN ({','.join('?' * len(values))})")
         args.extend(values)
@@ -353,7 +353,7 @@ def list_tasks(
 
     if stale_seconds is not None:
         if stale_seconds < 0:
-            raise TaskError(Outcome.validation_error, "stale_seconds не может быть отрицательным")
+            raise TaskError(Outcome.validation_error, "stale_seconds must not be negative")
         where.append("updated_at <= ?")
         args.append(time.time() - stale_seconds)
 
@@ -535,7 +535,7 @@ def claim(
     """
     assignee = _actor(assignee_id, "assignee_id")
     if assignee is None:
-        raise TaskError(Outcome.validation_error, "assignee_id обязателен для захвата задачи")
+        raise TaskError(Outcome.validation_error, "assignee_id is required to claim a task")
     scope = _actor(project, "project")
     # Inside a session no lease is needed: the session holds it, and the
     # transport is what renews the session.
@@ -544,7 +544,7 @@ def claim(
 
     allowed = sorted({str(p) for p in allowed_projects}) if allowed_projects is not None else None
     if allowed is not None and scope is not None and scope not in allowed:
-        raise TaskError(Outcome.forbidden, f"проект {scope} вне скоупа ключа")
+        raise TaskError(Outcome.forbidden, f"project {scope} is outside the key's scope")
 
     scope_sql = ""
     params: dict[str, Any] = {"me": assignee, "scope": scope, "now": now}
@@ -669,7 +669,7 @@ def reap_expired() -> list[int]:
                            result = COALESCE(result, ?)
                      WHERE id = ?
                     """,
-                    (now, _dump({"error": "аренда истекла, попытки исчерпаны"}, "result"), row["id"]),
+                    (now, _dump({"error": "lease expired, attempts exhausted"}, "result"), row["id"]),
                 )
                 _log(conn, row["id"], "dead_letter", actor="system", from_status="in_progress",
                      to_status="failed", detail={"held_by": row["assignee_id"], "attempts": row["attempts"]}, at=now)
@@ -687,7 +687,7 @@ def reap_expired() -> list[int]:
                 _log(conn, row["id"], "reaped", actor="system", from_status="in_progress",
                      to_status="pending",
                      detail={"held_by": row["assignee_id"], "attempts": row["attempts"],
-                             "reason": "сессия умерла" if row["by_session"] else "аренда истекла"}, at=now)
+                             "reason": "session died" if row["by_session"] else "lease expired"}, at=now)
                 requeued.append(row["id"])
 
     return requeued

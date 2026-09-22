@@ -57,9 +57,9 @@ server = MCPServer(
     name="noted",
     lifespan=_lifespan,
     instructions=(
-        "Таск-менеджер для агентов. Ставьте задачи через set_task, забирайте работу через "
-        "claim_task (timeout_s>0 — ждать появления задачи), отчитывайтесь через set_status. "
-        "Каждый ответ содержит поле outcome — по нему судите об исходе операции."
+        "A task manager for agents. Post work with set_task, take work with claim_task "
+        "(timeout_s>0 waits for a task to appear), report back with set_status. "
+        "Every answer carries an `outcome` field — judge the result by it."
     ),
 )
 
@@ -67,7 +67,7 @@ server = MCPServer(
 def _check(payload: dict[str, Any]) -> dict[str, Any]:
     outcome = payload.get("outcome")
     if outcome in HARD_ERRORS:
-        raise ToolError(f"{outcome}: {payload.get('message') or 'ошибка вызова'}")
+        raise ToolError(f"{outcome}: {payload.get('message') or 'call failed'}")
     return payload
 
 

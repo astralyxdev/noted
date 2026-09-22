@@ -13,7 +13,7 @@ from api.services import tasks as service
 
 
 def test_expired_lease_returns_the_task_to_the_queue():
-    task, _ = service.create({"title": "долгая"})
+    task, _ = service.create({"title": "long"})
     taken = service.claim("agent-1", lease_s=0.01)
     assert taken.id == task.id
     assert taken.lease_expires is not None
@@ -30,7 +30,7 @@ def test_expired_lease_returns_the_task_to_the_queue():
 
 
 def test_heartbeat_keeps_the_task():
-    task, _ = service.create({"title": "долгая"})
+    task, _ = service.create({"title": "long"})
     service.claim("agent-1", lease_s=0.05)
 
     outcome, extended = service.heartbeat(task.id, "agent-1", lease_s=30)
@@ -43,7 +43,7 @@ def test_heartbeat_keeps_the_task():
 
 
 def test_heartbeat_refuses_a_foreign_task():
-    task, _ = service.create({"title": "чужая"})
+    task, _ = service.create({"title": "foreign"})
     service.claim("agent-1", lease_s=30)
 
     outcome, current = service.heartbeat(task.id, "agent-2", lease_s=30)
@@ -52,14 +52,14 @@ def test_heartbeat_refuses_a_foreign_task():
 
 
 def test_heartbeat_refuses_a_task_that_is_not_running():
-    task, _ = service.create({"title": "ещё в очереди"})
+    task, _ = service.create({"title": "still queued"})
     outcome, _ = service.heartbeat(task.id, "agent-1")
     assert outcome is Outcome.status_conflict
 
 
 def test_claim_without_lease_is_never_reaped():
     """lease_s=0 refuses a lease outright: the task stays with its executor."""
-    task, _ = service.create({"title": "без аренды"})
+    task, _ = service.create({"title": "no lease"})
     taken = service.claim("agent-1", lease_s=0)
     assert taken.lease_expires is None
 
@@ -69,7 +69,7 @@ def test_claim_without_lease_is_never_reaped():
 
 
 def test_foreign_agent_cannot_close_someone_elses_work():
-    task, _ = service.create({"title": "моя"})
+    task, _ = service.create({"title": "mine"})
     service.claim("agent-1", lease_s=30)
 
     outcome, current = service.set_status(task.id, "done", actor="agent-2")
@@ -84,6 +84,6 @@ def test_foreign_agent_cannot_close_someone_elses_work():
 def test_claim_without_lease_s_still_takes_a_lease():
     """A lease is taken by default, which is the point for a swarm — but it has
     to be known: an agent working past the term in silence loses the task."""
-    service.create({"title": "наивный агент"})
+    service.create({"title": "naive agent"})
     taken = service.claim("agent-naive")
     assert taken.lease_expires is not None, "by default a task is leased, not held forever"

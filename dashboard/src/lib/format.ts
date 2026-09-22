@@ -15,10 +15,10 @@ export const STATUS_COLOR: Record<Status, ColorSet> = {
 
 export function ago(iso: string): string {
   const seconds = (Date.now() - new Date(iso).getTime()) / 1000
-  if (seconds < 60) return 'только что'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин назад`
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} ч назад`
-  return `${Math.floor(seconds / 86_400)} дн назад`
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} h ago`
+  return `${Math.floor(seconds / 86_400)} d ago`
 }
 
 export function at(iso: string): string {
@@ -39,20 +39,20 @@ export function isStale(task: TaskSummary): boolean {
 export function leaseLeft(task: TaskSummary): string | null {
   if (!task.lease_expires || task.status !== 'in_progress') return null
   const seconds = (new Date(task.lease_expires).getTime() - Date.now()) / 1000
-  if (seconds <= 0) return 'истекла'
-  if (seconds < 60) return `${Math.ceil(seconds)} с`
-  return `${Math.ceil(seconds / 60)} мин`
+  if (seconds <= 0) return 'expired'
+  if (seconds < 60) return `${Math.ceil(seconds)}s`
+  return `${Math.ceil(seconds / 60)} min`
 }
 
 export const EVENT_LABEL: Record<string, string> = {
-  created: 'создана',
-  claimed: 'взята в работу',
-  status: 'смена статуса',
-  retry: 'отправлена на повтор',
-  reaped: 'возвращена в очередь',
-  dead_letter: 'попытки исчерпаны',
-  blocked: 'заблокирована',
-  unblocked: 'разблокирована',
+  created: 'created',
+  claimed: 'claimed',
+  status: 'status change',
+  retry: 'sent for a retry',
+  reaped: 'returned to the queue',
+  dead_letter: 'attempts exhausted',
+  blocked: 'blocked',
+  unblocked: 'unblocked',
 }
 
 export function title(task: Pick<TaskSummary, 'task'>): string {

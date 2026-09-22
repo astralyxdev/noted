@@ -19,7 +19,7 @@ def client():
 
 
 def test_create_returns_201_created(client):
-    response = client.post("/api/tasks", json={"task": {"title": "раз"}, "created_by": 42})
+    response = client.post("/api/tasks", json={"task": {"title": "first"}, "created_by": 42})
     assert response.status_code == 201
     payload = response.json()
     assert payload["ok"] is True
@@ -53,7 +53,7 @@ def test_get_missing_task_returns_404_not_found(client):
     assert response.json() == {
         "ok": False,
         "outcome": "not_found",
-        "message": "задачи 999 не существует",
+        "message": "task 999 does not exist",
         "task": None,
     }
 
@@ -85,7 +85,7 @@ def test_claim_then_empty(client):
 
 def test_unknown_status_returns_422_validation_error(client):
     task_id = client.post("/api/tasks", json={"task": {"n": 1}}).json()["task"]["id"]
-    response = client.patch(f"/api/tasks/{task_id}/status", json={"status": "почти_done"})
+    response = client.patch(f"/api/tasks/{task_id}/status", json={"status": "almost_done"})
 
     assert response.status_code == 422
     assert response.json()["outcome"] == "validation_error"
@@ -93,7 +93,7 @@ def test_unknown_status_returns_422_validation_error(client):
 
 
 def test_task_must_be_an_object(client):
-    response = client.post("/api/tasks", json={"task": "строка"})
+    response = client.post("/api/tasks", json={"task": "a string"})
     assert response.status_code == 422
     assert response.json()["outcome"] == "validation_error"
 
@@ -146,12 +146,12 @@ async def test_long_poll_wakes_up_on_a_new_task():
         await asyncio.sleep(0.2)
 
         started = time.monotonic()
-        await client.post("/api/tasks", json={"task": {"title": "разбуди меня"}})
+        await client.post("/api/tasks", json={"task": {"title": "wake me"}})
         response = await asyncio.wait_for(waiting, timeout=5)
         elapsed = time.monotonic() - started
 
     assert response.json()["outcome"] == "claimed"
-    assert elapsed < 1.0, f"проснулся за {elapsed:.2f}с — похоже, ждал по таймауту, а не по событию"
+    assert elapsed < 1.0, f"woke after {elapsed:.2f}s — looks like a timeout rather than an event"
 
 
 async def test_long_poll_gives_up_with_empty():

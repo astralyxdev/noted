@@ -58,20 +58,20 @@ export function TaskTable({
     return (
       <Empty
         bordered
-        title={filtered ? 'Под фильтры ничего не попало' : 'Задач пока нет'}
+        title={filtered ? 'Nothing matches these filters' : 'No tasks yet'}
         description={
           filtered
-            ? 'Снимите часть условий — или сбросьте фильтры целиком.'
-            : 'Поставьте задачу формой выше либо инструментом set_task из агента.'
+            ? 'Drop some conditions, or clear the filters entirely.'
+            : 'Create one with the button above, or with set_task from an agent.'
         }
         action={
           filtered ? (
             <Button variant="outline" size="sm" onClick={onReset}>
-              Сбросить фильтры
+              Clear filters
             </Button>
           ) : (
             <Button size="sm" onClick={onCompose}>
-              Поставить задачу
+              Create a task
             </Button>
           )
         }
@@ -84,11 +84,11 @@ export function TaskTable({
       <TableHeader>
         <TableRow>
           <TableHead className="w-14">#</TableHead>
-          <TableHead className="w-32">статус</TableHead>
-          <TableHead className="w-32">проект</TableHead>
-          <TableHead>задача</TableHead>
-          <TableHead className="w-36">исполнитель</TableHead>
-          <TableHead className="w-32">обновлена</TableHead>
+          <TableHead className="w-32">status</TableHead>
+          <TableHead className="w-32">project</TableHead>
+          <TableHead>task</TableHead>
+          <TableHead className="w-36">assignee</TableHead>
+          <TableHead className="w-32">updated</TableHead>
           <TableHead className="w-12" />
         </TableRow>
       </TableHeader>
@@ -130,39 +130,39 @@ export function TaskTable({
               </button>
               {task.parent_id && (
                 <span className="text-muted-foreground ml-2 font-mono text-xs">
-                  из #{task.parent_id}
+                  from #{task.parent_id}
                 </span>
               )}
               {isStale(task) && (
                 <Badge color="amber" variant="outline" size="sm" className="ml-2">
-                  {task.lease_expires ? 'аренда истекла' : 'залипла'}
+                  {task.lease_expires ? 'lease expired' : 'stuck'}
                 </Badge>
               )}
               {task.waiting_on > 0 && (
                 <Badge color="violet" variant="outline" size="sm" className="ml-2">
-                  ждёт {task.waiting_on}
+                  waiting on {task.waiting_on}
                 </Badge>
               )}
               {task.attempts > 1 && (
                 <span className="text-muted-foreground ml-2 font-mono text-xs">
-                  попытка {task.attempts}
-                  {task.max_attempts ? ` из ${task.max_attempts}` : ''}
+                  attempt {task.attempts}
+                  {task.max_attempts ? ` of ${task.max_attempts}` : ''}
                 </span>
               )}
               {task.priority !== 0 && (
                 <span className="text-muted-foreground ml-2 font-mono text-xs">
-                  приоритет {task.priority}
+                  priority {task.priority}
                 </span>
               )}
             </TableCell>
 
             <TableCell className="text-muted-foreground font-mono text-xs">
-              {task.assignee_id ?? 'общий пул'}
+              {task.assignee_id ?? 'shared pool'}
             </TableCell>
 
             <TableCell className="text-muted-foreground font-mono text-xs" title={at(task.updated_at)}>
               {ago(task.updated_at)}
-              {leaseLeft(task) && <span className="block opacity-70">аренда {leaseLeft(task)}</span>}
+              {leaseLeft(task) && <span className="block opacity-70">lease {leaseLeft(task)}</span>}
             </TableCell>
 
             <TableCell>
@@ -171,7 +171,7 @@ export function TaskTable({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`Действия над задачей ${task.id}`}
+                    aria-label={`Actions for task ${task.id}`}
                     className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                   >
                     <MoreHorizontal />
@@ -179,9 +179,9 @@ export function TaskTable({
                 </DropdownMenuTrigger>
 
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => onOpen(task.id)}>Открыть</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onOpen(task.id)}>Open</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuLabel>Сменить статус</DropdownMenuLabel>
+                  <DropdownMenuLabel>Change status</DropdownMenuLabel>
                   {STATUSES.filter((status) => status !== task.status).map((status) => (
                     <DropdownMenuItem key={status} onSelect={() => onStatus(task.id, status)}>
                       {status}

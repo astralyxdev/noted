@@ -4,8 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// Ядро отдаёт собранный dist само, поэтому в разработке просто проксируем
-// к нему API и поток событий — фронтенд везде живёт на тех же путях.
+// The core serves the built dist itself, so in development we simply proxy the
+// API and the event stream to it — the frontend lives on the same paths either way.
 const core = process.env.NOTED_API ?? 'http://127.0.0.1:8787'
 
 export default defineConfig({

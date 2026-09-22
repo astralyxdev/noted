@@ -1,9 +1,9 @@
-# noted: ядро на FastAPI + SQLite и дэшборд на astralyx-ui.
-# Собирать из корня проекта:  docker build -f deploy/Dockerfile -t noted .
+# noted: a FastAPI + SQLite core and a dashboard on astralyx-ui.
+# Build from the project root:  docker build -f deploy/Dockerfile -t noted .
 
-# ─────────────────────────── сборка дэшборда ───────────────────────────
-# Node нужен только здесь. В финальный образ уезжает один каталог с готовыми
-# файлами, так что ни node_modules, ни самого Node в рантайме нет.
+# ─────────────────────────── building the dashboard ────────────────────
+# Node is needed only here. One directory of finished files travels into the
+# final image, so neither node_modules nor Node itself reaches the runtime.
 FROM node:22-slim AS ui
 
 WORKDIR /ui
@@ -12,7 +12,7 @@ RUN npm ci
 COPY dashboard/ ./
 RUN npm run build
 
-# ──────────────────────────────── ядро ────────────────────────────────
+# ──────────────────────────────── the core ────────────────────────────
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,7 +25,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Зависимости отдельным слоем — код меняется чаще, чем они
+# Dependencies in their own layer: the code changes more often than they do
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -36,7 +36,8 @@ RUN pip install --no-cache-dir --no-deps -e .
 
 COPY --from=ui /ui/dist ./dashboard/dist
 
-# База живёт в томе, а не в слое образа: пересборка не должна стирать задачи
+# The database lives in a volume, not in an image layer: a rebuild must not
+# wipe the tasks
 RUN useradd --system --uid 10001 noted && mkdir -p /data && chown noted:noted /data
 USER noted
 VOLUME ["/data"]
@@ -45,5 +46,5 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python -c "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8787/healthz', timeout=2).status == 200 else 1)"
 
-# Внутри контейнера слушаем 0.0.0.0, наружу публикуем только на 127.0.0.1 хоста.
+# Inside the container we listen on 0.0.0.0; only the host loopback is published.
 CMD ["noted-api"]

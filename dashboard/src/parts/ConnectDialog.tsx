@@ -39,7 +39,7 @@ function Snippet({ text }: { text: string }) {
         size="icon-sm"
         className="absolute top-1.5 right-1.5"
         onClick={copy}
-        aria-label={copied ? 'Скопировано' : 'Скопировать'}
+        aria-label={copied ? 'Copied' : 'Copy'}
       >
         {copied ? <Check /> : <Copy />}
       </Button>
@@ -56,15 +56,15 @@ export function ConnectDialog({ open, onOpenChange }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="lg">
         <DialogHeader>
-          <DialogTitle>Подключить MCP</DialogTitle>
+          <DialogTitle>Connect MCP</DialogTitle>
           <DialogDescription>
-            Сервер поднят вместе с ядром и слушает на том же порту — отдельный процесс-адаптер не нужен.
+            The server comes up with the core and listens on the same port — no separate adapter process is needed.
           </DialogDescription>
         </DialogHeader>
 
         <DialogBody className="flex flex-col gap-5">
           <section className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground font-mono text-xs uppercase">адрес сервера</h3>
+            <h3 className="text-muted-foreground font-mono text-xs uppercase">server address</h3>
             <Snippet text={url} />
           </section>
 
@@ -74,7 +74,7 @@ export function ConnectDialog({ open, onOpenChange }: Props) {
           </section>
 
           <section className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground font-mono text-xs uppercase">конфиг клиента</h3>
+            <h3 className="text-muted-foreground font-mono text-xs uppercase">client config</h3>
             <Snippet
               text={JSON.stringify(
                 { mcpServers: { noted: { type: 'http', url } } },
@@ -88,19 +88,19 @@ export function ConnectDialog({ open, onOpenChange }: Props) {
 
           <section className="text-muted-foreground flex flex-col gap-2 text-sm">
             <p>
-              Инструменты: <code className="font-mono text-xs">set_task</code>,{' '}
+              Tools: <code className="font-mono text-xs">set_task</code>,{' '}
               <code className="font-mono text-xs">get_tasks</code>,{' '}
               <code className="font-mono text-xs">get_task</code>,{' '}
               <code className="font-mono text-xs">set_status</code>,{' '}
               <code className="font-mono text-xs">claim_task</code>.
             </p>
             <p>
-              Если задан <code className="font-mono text-xs">NOTED_TOKEN</code>, добавьте заголовок:{' '}
+              With <code className="font-mono text-xs">NOTED_TOKEN</code> set, add the header:{' '}
               <code className="font-mono text-xs">--header "X-Noted-Token: …"</code>.
             </p>
             <p>
-              Клиент без HTTP-транспорта подключается через stdio-адаптер:{' '}
-              <code className="font-mono text-xs">noted-mcp</code> из того же образа.
+              A client without HTTP transport connects through the stdio adapter:{' '}
+              <code className="font-mono text-xs">noted-mcp</code> from the same image.
             </p>
           </section>
         </DialogBody>
@@ -113,7 +113,7 @@ export function ConnectButton({ onClick }: { onClick: () => void }) {
   return (
     <Button variant="outline" size="sm" onClick={onClick}>
       <Plug />
-      Подключить MCP
+      Connect MCP
     </Button>
   )
 }

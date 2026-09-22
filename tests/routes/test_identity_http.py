@@ -18,11 +18,11 @@ def test_key_decides_who_you_are(live_server, key):
     with httpx.Client(base_url=live_server, headers={"X-Noted-Token": key}, timeout=10) as client:
         created = client.post(
             "/api/tasks",
-            json={"task": {"n": 1}, "project": "noted", "created_by": "кто-то другой"},
+            json={"task": {"n": 1}, "project": "noted", "created_by": "somebody else"},
         ).json()
         assert created["task"]["created_by"] == "agent-1", "authorship cannot be forged"
 
-        claimed = client.post("/api/tasks/claim", json={"assignee_id": "чужое-имя"}).json()
+        claimed = client.post("/api/tasks/claim", json={"assignee_id": "another-name"}).json()
         assert claimed["task"]["assignee_id"] == "agent-1", "you cannot take another name"
 
 
@@ -59,7 +59,7 @@ def test_transport_session_holds_the_task_without_any_lease(live_server, key):
     An MCP client sends Mcp-Session-Id by itself; here the same header is set
     by hand, because what is under test is the server, not the SDK client.
     """
-    service.create({"title": "долгая сборка"}, project="noted")
+    service.create({"title": "long build"}, project="noted")
 
     headers = {"X-Noted-Token": key, "Mcp-Session-Id": "session-of-a-live-process"}
     with httpx.Client(base_url=live_server, headers=headers, timeout=10) as client:
@@ -75,7 +75,7 @@ def test_transport_session_holds_the_task_without_any_lease(live_server, key):
 
 def test_a_second_instance_of_the_same_agent_cannot_write(live_server, key):
     """Fencing over the transport: same name, different instance."""
-    task = service.create({"title": "спорная"}, project="noted")[0]
+    task = service.create({"title": "contested"}, project="noted")[0]
 
     first = {"X-Noted-Token": key, "X-Noted-Session": "instance-one"}
     second = {"X-Noted-Token": key, "X-Noted-Session": "instance-two"}

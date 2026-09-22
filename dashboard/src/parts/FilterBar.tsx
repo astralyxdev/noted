@@ -14,11 +14,11 @@ type Props = {
 }
 
 const STALE_OPTIONS = [
-  { value: '', label: 'неважно' },
-  { value: '60', label: 'дольше минуты' },
-  { value: '300', label: 'дольше 5 минут' },
-  { value: '3600', label: 'дольше часа' },
-  { value: '86400', label: 'дольше суток' },
+  { value: '', label: 'any age' },
+  { value: '60', label: 'over a minute' },
+  { value: '300', label: 'over 5 minutes' },
+  { value: '3600', label: 'over an hour' },
+  { value: '86400', label: 'over a day' },
 ]
 
 export function FilterBar({
@@ -41,7 +41,7 @@ export function FilterBar({
           variant={filters.status.length === 0 ? 'default' : 'outline'}
           onClick={() => onPatch({ status: [] })}
         >
-          все
+          all
           <span className="text-muted-foreground ml-1 tabular-nums">{stats.total}</span>
         </Button>
 
@@ -67,34 +67,34 @@ export function FilterBar({
       <div className="flex flex-wrap items-end gap-2">
         <Select
           className="w-44"
-          triggerLabel="Проект"
-          placeholder="проект: любой"
+          triggerLabel="Project"
+          placeholder="project: any"
           value={filters.project ?? ''}
           onValueChange={(value) => onPatch({ project: value || null })}
           options={[
-            { value: '', label: 'проект: любой' },
-            { value: NONE, label: 'без проекта' },
+            { value: '', label: 'project: any' },
+            { value: NONE, label: 'no project' },
             ...projects.map((name) => ({ value: name, label: name })),
           ]}
         />
 
         <Select
           className="w-48"
-          triggerLabel="Исполнитель"
-          placeholder="исполнитель: любой"
+          triggerLabel="Assignee"
+          placeholder="assignee: any"
           value={filters.assignee ?? ''}
           onValueChange={(value) => onPatch({ assignee: value || null })}
           options={[
-            { value: '', label: 'исполнитель: любой' },
-            { value: NONE, label: 'общий пул' },
+            { value: '', label: 'assignee: any' },
+            { value: NONE, label: 'shared pool' },
             ...assignees.map((name) => ({ value: name, label: name })),
           ]}
         />
 
         <Select
           className="w-48"
-          triggerLabel="Не обновлялась дольше"
-          placeholder="не обновлялась"
+          triggerLabel="Not updated for"
+          placeholder="not updated for"
           value={filters.stale ? String(filters.stale) : ''}
           onValueChange={(value) => onPatch({ stale: value ? Number(value) : null })}
           options={STALE_OPTIONS}
@@ -102,7 +102,7 @@ export function FilterBar({
 
         {dirty && (
           <Button size="sm" variant="ghost" onClick={onReset}>
-            сбросить
+            reset
           </Button>
         )}
       </div>

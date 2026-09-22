@@ -9,80 +9,92 @@ from __future__ import annotations
 
 from api.models.envelope import HARD_ERRORS as _HARD_OUTCOMES
 
-SET_TASK = """Поставить задачу.
+SET_TASK = """Post a task.
 
-task — произвольный JSON-объект с описанием работы. project задаёт скоуп:
-агент, работающий в этом проекте, заберёт только его задачи. assignee_id=null
-кладёт задачу в общий пул, откуда её возьмёт первый свободный агент. parent_id
-связывает подзадачу с родительской. key — ключ идемпотентности: повторный
-вызов с тем же ключом не создаст дубль и вернёт outcome="exists".
+`task` is an arbitrary JSON object describing the work. `project` sets the
+scope: an agent working in that project will only ever be handed its tasks.
+`assignee_id=null` drops the task into the shared pool, where the first free
+agent picks it up. `parent_id` links a subtask to its parent. `key` is an
+idempotency key: repeating the call with the same key creates no duplicate and
+answers outcome="exists".
 
-priority: больше — раньше выдаётся (по умолчанию 0).
-max_attempts: сколько раз пробовать. Провал до исчерпания попыток не оставляет
-задачу в failed, а возвращает её в очередь с нарастающей паузой; когда попытки
-кончились, задача остаётся в failed — это и есть dead letter.
-depends_on: список id, которые должны стать done раньше. Пока они не закрыты,
-задача не выдаётся никому; если предшественник провалился или отменён, задача
-переходит в blocked.
-Исходы: created, exists."""
+priority: higher goes out sooner (0 by default).
+max_attempts: how many times to try. A failure with attempts left does not
+leave the task failed — it returns to the queue after a growing pause; once
+attempts run out the task stays failed, and that is the dead letter.
+depends_on: ids that must reach done first. While they are open the task is
+handed to nobody; if a predecessor fails or is cancelled the task turns
+blocked.
+Outcomes: created, exists."""
 
-GET_TASKS = """Список задач, свежие первыми.
+GET_TASKS = """List tasks, newest first.
 
-status — строка или список (["pending","in_progress"] = всё открытое).
-project сужает до одного проекта, unscoped=true — только задачи без проекта.
-unassigned=true — только общий пул. stale_seconds — задачи, не обновлявшиеся
-дольше N секунд: так находятся зависшие in_progress после падения агента.
-before_id — курсор постраничной выдачи: следующая порция это всё, что старше
-указанного id. Смещения нет намеренно — пока листаете, в очередь прилетают
-новые задачи, и смещение начало бы пропускать строки.
-Поле result в списке не приходит — за ним идите в get_task. Исход: ok."""
+status takes a string or a list (["pending","in_progress"] is everything open).
+project narrows to one project, unscoped=true returns only tasks with none.
+unassigned=true returns only the shared pool. stale_seconds finds tasks that
+have not been updated for N seconds — that is how in_progress work left behind
+by a dead agent is found.
+before_id is the paging cursor: the next page is everything older than that id.
+There is deliberately no offset — new tasks keep arriving while you page, and
+an offset would start skipping rows.
+The result field is not included in a list; use get_task for it. Outcome: ok."""
 
-GET_TASK = """Одна задача целиком, вместе с result и списком зависимостей.
+GET_TASK = """One task in full, with its result and its dependencies.
 
-with_events=true добавляет журнал переходов: кто и когда менял статус,
-когда задачу забирали, возвращали по истечении аренды и отправляли на повтор.
-Исходы: ok, not_found."""
+with_events=true adds the transition journal: who changed the status and when,
+when the task was claimed, returned after a lease expired, or sent for a retry.
+Outcomes: ok, not_found."""
 
-SET_STATUS = """Сменить статус задачи и приложить результат.
+SET_STATUS = """Change a task's status and attach a result.
 
 status: pending | in_progress | blocked | done | failed | cancelled.
-result пишется и для успеха, и для ошибки (при failed кладите туда причину).
-if_status делает вызов compare-and-set: запись пройдёт, только если задача
-всё ещё в этом статусе, иначе придёт outcome="status_conflict" с актуальным
-состоянием — так двое не доделывают одну задачу.
-assignee_id — назовите себя: если задача в работе у другого исполнителя,
-придёт outcome="not_owner" и чужая работа не будет закрыта по ошибке.
+result is written for success and failure alike (on failed, put the reason
+there).
 
-Если у задачи задан max_attempts и попытки ещё остались, статус failed не
-оставляет её проваленной: она вернётся в очередь с паузой, и в ответе будет
-status="pending". Это ожидаемо.
-Исходы: updated, not_found, status_conflict, not_owner."""
+Compare-and-set is on by default: with no `if_status` the server checks that
+the task is still in_progress, the only state an executor may report from. A
+mismatch answers outcome="status_conflict" with the current state, so two
+agents cannot finish the same task. Pass `if_status` to check a different
+state, or force=true to write unconditionally — that is for a human, not for
+an agent that forgot a parameter.
 
-CLAIM_TASK = """Атомарно забрать следующую задачу и перевести её в in_progress.
+assignee_id names you: a task held by another executor answers
+outcome="not_owner", and another agent's work is not closed by mistake.
 
-Порядок: сначала адресованные этому assignee_id, затем общий пул; внутри —
-по убыванию priority, при равном приоритете FIFO. Двое не могут забрать одну
-задачу. Не выдаются задачи с неистёкшей паузой после провала и те, у которых
-остались незакрытые зависимости.
-project сужает выборку строго: назвав проект, агент не заберёт ни чужую
-задачу, ни задачу без проекта.
-timeout_s=0 — забрать, если есть; timeout_s>0 — ждать появления до N секунд
-(это дешевле, чем крутить опрос). Если ждать нечего, придёт outcome="empty".
+If the task has max_attempts and attempts remain, status failed does not leave
+it failed: it returns to the queue after a pause, and the answer will carry
+status="pending". That is expected.
+Outcomes: updated, not_found, status_conflict, not_owner, stale_session."""
 
-lease_s — срок аренды в секундах; по умолчанию 300. Если не продлевать её
-heartbeat-ом, задача вернётся в очередь сама: так работа упавшего агента не
-зависает навсегда. Обратная сторона: работаете дольше аренды и молчите —
-задачу заберёт другой агент, и делать её будут двое. Поэтому либо зовите
-heartbeat по ходу работы, либо берите lease_s с запасом на худший случай.
-lease_s=0 — без аренды, задача останется за вами при любом исходе.
-Исходы: claimed, empty."""
+CLAIM_TASK = """Atomically take the next task and move it to in_progress.
 
-HEARTBEAT = """Продлить аренду задачи: «я жив и всё ещё её делаю».
+Dispatch order is a contract: priority descending, then tasks addressed to this
+assignee_id before the shared pool, then FIFO. Two agents can never take the
+same task. Tasks still inside a post-failure pause and tasks with open
+dependencies are not handed out.
+project narrows the search strictly: naming a project excludes both other
+projects' tasks and tasks with no project at all.
+timeout_s=0 takes a task if one is there; timeout_s>0 waits for one to appear
+for up to N seconds, which is cheaper than polling. With nothing to wait for
+the answer is outcome="empty".
 
-Зовите периодически, пока работаете, с интервалом заметно меньше lease_s.
-Перестали звать — аренда истечёт, и задача вернётся в очередь другому агенту.
-Продлить можно только свою задачу и только пока она в in_progress.
-Исходы: updated, not_found, status_conflict, not_owner."""
+lease_s is the lease length, 300 seconds by default. Unless it is renewed the
+task returns to the queue on its own, so a crashed agent's work never hangs.
+The other side of that: work past the lease in silence and another agent takes
+the task, with both of you doing it. So either call heartbeat as you go or ask
+for a lease that covers the worst case. lease_s=0 takes no lease at all.
+
+When your transport keeps a session (the stdio adapter, or an HTTP client
+sending Mcp-Session-Id), no lease is set: the task is held for as long as your
+process lives, and heartbeats stop being your concern.
+Outcomes: claimed, empty."""
+
+HEARTBEAT = """Extend a task's lease: "I am alive and still working on it".
+
+Call it periodically while you work, well inside lease_s. Stop calling and the
+lease expires, handing the task to another agent. Only your own task can be
+extended, and only while it is in_progress.
+Outcomes: updated, not_found, status_conflict, not_owner, stale_session."""
 
 #: Outcomes an agent must see as a tool error rather than as a result.
 #: not_found, status_conflict and empty stay out: those are normal answers.

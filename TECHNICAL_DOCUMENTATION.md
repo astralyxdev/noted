@@ -1,401 +1,472 @@
-# Техническая документация
+# Technical documentation
 
-Устройство таск-менеджера из `SPEC.md`: раскладка, решения и их причины, чеклист приёмки.
-Разделы идут в порядке зависимостей — каждый следующий опирается на готовый предыдущий.
+How the task manager from `SPEC.md` is built: the layout, the decisions and the
+reasons behind them, an acceptance checklist. Sections follow dependency order —
+each one rests on the previous.
 
-## 0. Стек и раскладка
+## 0. Stack and layout
 
-Ядро: Python 3.13, FastAPI + uvicorn, SQLite из стандартной библиотеки, `mcp` SDK, `httpx`.
-Дэшборд: React + TypeScript на [astralyx-ui](https://ui.astralyx.dev), Vite, Tailwind v4.
-Node нужен только на сборке — в рантайме остаётся один Python-процесс.
+The core: Python 3.13, FastAPI with uvicorn, SQLite from the standard library,
+the `mcp` SDK, `httpx`. The dashboard: React and TypeScript on
+[astralyx-ui](https://ui.astralyx.dev), Vite, Tailwind v4. Node is needed only at
+build time — one Python process remains in the runtime.
 
-Архитектура кода — service-based: слой решает *как*, домен решает *что*. Один домен даёт
-одноимённый файл в каждом слое.
+The code is service-based: a layer decides *how*, a domain decides *what*. One
+domain gets a file of the same name in every layer.
 
 ```
 noted/
-├── main.py                      # сборка FastAPI: роутеры, MCP, статика, uvicorn
-├── cli.py                       # noted-keys: выдача и отзыв ключей агентов
-├── .env.example                 # все переменные с пояснениями; копируется в .env
+├── main.py                      # builds the FastAPI app: routers, MCP, static, uvicorn
+├── cli.py                       # noted-keys: issuing and revoking agent keys
+├── .env.example                 # every variable, explained; copied to .env
 ├── requirements.txt
-├── pyproject.toml               # entry points noted-api / noted-mcp
+├── pyproject.toml               # entry points noted-api / noted-mcp / noted-keys
 ├── .dockerignore · .gitignore
-├── SPEC.md · TECHNICAL_DOCUMENTATION.md · README.md
+├── README.md · SPEC.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
 ├── deploy/
-│   ├── Dockerfile               # два этапа: Node собирает фронт, Python отдаёт
-│   └── docker-compose.yml       # порт только на 127.0.0.1, база в томе
+│   ├── Dockerfile               # two stages: Node builds the front, Python serves it
+│   └── docker-compose.yml       # loopback-only port, database in a volume
 ├── api/
-│   ├── settings.py              # единственное место, где читается окружение
+│   ├── settings.py              # the only place the environment is read
 │   ├── models/
-│   │   ├── database.py          # соединение SQLite, PRAGMA, лок, схема, миграции
-│   │   ├── task.py              # pydantic: задача, статусы, тела запросов
-│   │   ├── agent.py             # принципал и его сессия
-│   │   └── envelope.py          # конверт ответа, enum Outcome, маппинг на HTTP
+│   │   ├── database.py          # SQLite connection, PRAGMAs, lock, schema, migrations
+│   │   ├── task.py              # pydantic: the task, statuses, request bodies
+│   │   ├── agent.py             # a principal and its session
+│   │   └── envelope.py          # the response envelope, Outcome enum, HTTP mapping
 │   ├── routes/
-│   │   ├── __init__.py          # сборка роутеров
-│   │   ├── tasks.py             # JSON /api
-│   │   ├── live.py              # SSE /events
-│   │   └── mcp.py               # MCP по HTTP, монтируется на /mcp
+│   │   ├── __init__.py          # router assembly
+│   │   ├── tasks.py             # the JSON API
+│   │   ├── live.py              # SSE at /events
+│   │   └── mcp.py               # MCP over HTTP, mounted at /mcp
 │   ├── services/
-│   │   ├── tasks.py             # логика домена задач + весь SQL
-│   │   └── agents.py            # ключи, скоупы, сессии
+│   │   ├── tasks.py             # task domain logic and all the SQL
+│   │   └── agents.py            # keys, scopes, sessions
 │   └── utils/
-│       ├── __init__.py          # run_service (вызов сервиса в потоке) и respond
-│       ├── authorization.py     # принципал из заголовков, вход дэшборда
-│       ├── events.py            # два Condition: работа для агентов, изменения для дэшборда
-│       └── tool_docs.py         # описания инструментов, общие для обоих транспортов
-├── mcp_adapter/                 # stdio-транспорт для клиентов без HTTP
-│   ├── client.py                # httpx-клиент к ядру
-│   └── server.py                # те же пять инструментов поверх /api
-├── dashboard/                   # фронтенд, собирается в dist/
-│   ├── components.json          # конфиг astralyx-ui: куда класть компоненты
-│   ├── vite.config.ts           # алиас @, прокси /api и /events в разработке
-│   ├── index.html               # ссылки на иконки и манифест
-│   ├── public/                  # фавиконки и манифест, Vite кладёт их в dist как есть
+│       ├── __init__.py          # run_service (a service call in a thread) and respond
+│       ├── authorization.py     # a principal from headers, the dashboard door
+│       ├── events.py            # two Conditions: work for agents, changes for dashboards
+│       └── tool_docs.py         # tool descriptions, shared by both transports
+├── mcp_adapter/                 # the stdio transport for clients without HTTP
+│   ├── client.py                # the httpx client to the core
+│   └── server.py                # the same tools over /api
+├── dashboard/                   # the frontend, built into dist/
+│   ├── components.json          # astralyx-ui config: where components land
+│   ├── vite.config.ts           # the @ alias, /api and /events proxied in dev
+│   ├── index.html               # icon and manifest links
+│   ├── public/                  # favicons and the manifest, copied into dist as they are
 │   └── src/
-│       ├── api.ts               # типизированный клиент к /api
-│       ├── hooks.ts             # фильтры в URL, загрузка, SSE
-│       ├── App.tsx              # сборка страницы
-│       ├── parts/               # FilterBar · TaskTable · NewTaskDialog · TaskDialog · ConnectDialog
-│       ├── components/ui/       # копии компонентов astralyx-ui (в репозитории, не зависимость)
-│       └── lib/                 # format.ts плюс helpers кита
+│       ├── api.ts               # a typed client to /api
+│       ├── hooks.ts             # filters in the URL, loading, SSE
+│       ├── App.tsx              # the page assembly
+│       ├── parts/               # FilterBar · TaskTable · NewTaskDialog · TaskDialog · ConnectDialog · LoginScreen
+│       ├── components/ui/       # copies of astralyx-ui components (in the repo, not a dependency)
+│       └── lib/                 # format.ts plus the kit's helpers
 └── tests/
-    ├── conftest.py              # своя база на тест, живой uvicorn для потоковых проверок
-    ├── services/test_tasks.py
-    ├── routes/test_tasks.py · test_dashboard.py · test_mcp_http.py
+    ├── conftest.py              # a fresh database per test, a live uvicorn for streaming checks
+    ├── services/                # test_tasks · test_lease · test_retry · test_deps · test_journal · test_cas · test_identity · test_rate_limit
+    ├── routes/                  # test_tasks · test_dashboard · test_mcp_http · test_identity_http · test_events_contract
     └── mcp/test_adapter.py
 ```
 
-**Правила слоёв** — то, ради чего раскладка и заводится:
+**Layer rules** — the reason the layout exists at all:
 
-- `routes/` — только доставка: разобрать запрос, позвать сервис, упаковать ответ. Ни SQL, ни логики.
-- `services/` — вся логика домена, включая SQL. Не импортируют FastAPI: не знают ни про `Request`,
-  ни про `HTTPException`, возвращают данные и поднимают доменные исключения. Поэтому их тесты
-  не поднимают приложение, а JSON-роуты, MCP и адаптер зовут один и тот же код.
-- `models/` — pydantic-схемы и `database.py` с соединением и схемой БД. Без логики.
-- `utils/` — сквозное, не привязанное к домену.
-- `settings.py` — единственное место, где читается окружение. Лежит в корне пакета намеренно:
-  от него зависит каждый слой, а он — ни от кого. `.env` подхватывается один раз при импорте
-  и никогда не перебивает уже экспортированную переменную.
-- Новый домен = новый одноимённый файл в `routes/` и `services/`; если файл появился только
-  в одном слое, домен выделен неверно.
+- `routes/` is delivery only: parse the request, call a service, wrap the answer.
+  No SQL, no logic.
+- `services/` holds the domain logic, SQL included. They never import FastAPI:
+  they know nothing of `Request` or `HTTPException`, they return data and raise
+  domain errors. That is why their tests start no application, while the JSON
+  routes, MCP and the adapter all call the same code.
+- `models/` holds pydantic schemas and `database.py` with the connection and the
+  schema. No logic.
+- `utils/` is cross-cutting, tied to no domain.
+- `settings.py` is the only place the environment is read. It sits at the root of
+  the package deliberately: every layer may depend on it, and it depends on none.
+  `.env` is loaded once at import and never overrides an already exported variable.
+- A new domain means a new file of the same name in `routes/` and `services/`; a
+  file that appears in only one layer means the domain was drawn wrong.
 
-## 1. База и домен задач
+## 1. The database and the task domain
 
-**Схема** (`models/database.py`):
+**Schema** (`models/database.py`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS tasks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task        TEXT    NOT NULL,              -- JSON
-    status      TEXT    NOT NULL DEFAULT 'pending',
-    project     TEXT,                          -- скоуп, NULL = вне проектов
-    assignee_id TEXT,
-    created_by  TEXT,
-    parent_id   INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
-    key         TEXT    UNIQUE,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task          TEXT    NOT NULL,              -- JSON
+    status        TEXT    NOT NULL DEFAULT 'pending',
+    project       TEXT,                          -- scope, NULL means none
+    assignee_id   TEXT,                          -- the current holder
+    created_by    TEXT,
+    parent_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    key           TEXT    UNIQUE,
     result        TEXT,                          -- JSON
     priority      INTEGER NOT NULL DEFAULT 0,
     attempts      INTEGER NOT NULL DEFAULT 0,
-    max_attempts  INTEGER,                       -- NULL = без повторов
-    retry_after   REAL,                          -- пауза после провала
-    lease_expires REAL,                          -- срок аренды
-    created_at    REAL    NOT NULL,              -- unix, наружу отдаётся ISO-8601
+    max_attempts  INTEGER,                       -- NULL means no retries
+    retry_after   REAL,                          -- the pause after a failure
+    lease_expires REAL,                          -- the lease term
+    session_id    TEXT,                          -- which session holds the task
+    created_at    REAL    NOT NULL,              -- unix; ISO-8601 on the way out
     updated_at    REAL    NOT NULL
 );
 
--- Зависимости. Цикл собрать нельзя по построению: связи задаются при создании,
--- а на новую задачу к этому моменту никто ещё не ссылается.
+-- Dependencies. A cycle cannot be built by construction: links are set at
+-- creation time, and nothing references a brand new task yet.
 CREATE TABLE IF NOT EXISTS task_deps (
     task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, depends_on_id)
 );
 
--- Журнал переходов: только дописывается.
+-- An agent as a principal. The key is stored hashed.
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE, projects TEXT,
+    is_admin INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, revoked_at REAL
+);
+
+-- A session is one instance of an agent. Ids are never reused.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, transport TEXT,
+    opened_at REAL NOT NULL, renewed_at REAL NOT NULL, closed_at REAL
+);
+
+-- The transition journal: append-only.
 CREATE TABLE IF NOT EXISTS task_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     at REAL NOT NULL, event TEXT NOT NULL, actor TEXT,
     from_status TEXT, to_status TEXT, detail TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_queue   ON tasks(status, assignee_id, id);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent  ON tasks(parent_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, status, id);
 ```
 
-**Миграция.** Таблица создаётся, затем `_migrate()` досыпает колонки из `LATER_COLUMNS`
-(`PRAGMA table_info` → `ALTER TABLE ADD COLUMN`), и только потом создаются индексы — иначе
-индекс по новой колонке упадёт на базе, созданной до неё.
+**Migration.** The table is created, then `_migrate()` adds the columns listed in
+`LATER_COLUMNS` (`PRAGMA table_info` → `ALTER TABLE ADD COLUMN`), and only then
+are the indexes created — otherwise an index over a new column fails on a
+database that predates it.
 
-**Соединение** — одно на процесс, `check_same_thread=False`, `isolation_level=None`, PRAGMA
-`journal_mode=WAL`, `busy_timeout=10000`, `foreign_keys=ON`. Все операции под одним `RLock`;
-контекстный менеджер `transaction()` берёт лок и выполняет `BEGIN IMMEDIATE`. Это и есть явная
-сериализация: писатель один, а лок закрывает конкурентность внутри процесса.
+**The connection** is one per process, `check_same_thread=False`,
+`isolation_level=None`, with `journal_mode=WAL`, `busy_timeout=10000` and
+`foreign_keys=ON`. Every operation runs under a single `RLock`; the
+`transaction()` context manager takes the lock and issues `BEGIN IMMEDIATE`.
+That is the explicit serialisation: one writer, with the lock covering
+concurrency inside the process.
 
-**`services/tasks.py`** — `create`, `get`, `list_tasks`, `set_status`, `claim`, `stats`,
-`projects`, `assignees`. Возвращают данные, а не HTTP-коды; кривой вход поднимает `TaskError`
-с полем `code` (значение `Outcome`).
+**`services/tasks.py`** — `create`, `get`, `list_tasks`, `set_status`, `claim`,
+`heartbeat`, `reap_expired`, `events`, `events_after`, `trim_journal`, `stats`,
+`projects`, `assignees`. They return data rather than HTTP codes; malformed input
+raises `TaskError` carrying a `code` (an `Outcome` value).
 
-Ключевые места:
+The load-bearing parts:
 
-- Идемпотентность: `INSERT ... ON CONFLICT(key) DO NOTHING`; при `rowcount == 0` — `SELECT` по `key`
-  и возврат существующей задачи с `created=False`. Гонку на вставке снимает UNIQUE-индекс.
-- Compare-and-set: `SELECT` статуса и `UPDATE` в одной транзакции; несовпадение с `if_status` —
-  возврат текущей задачи без записи.
-- Атомарный захват:
+- Idempotency: `INSERT ... ON CONFLICT(key) DO NOTHING`; on `rowcount == 0` a
+  `SELECT` by `key` returns the existing task with `created=False`. The UNIQUE
+  index removes the race on insert.
+- Compare-and-set: the status is read and written in one transaction; a mismatch
+  with `if_status` returns the current task without writing.
+- The atomic claim:
   ```sql
-  SELECT id FROM tasks
-   WHERE status = 'pending'
-     AND (assignee_id IS NULL OR assignee_id = :me)
-     AND (:scope IS NULL OR project = :scope)
-   ORDER BY (assignee_id IS NULL), id
+  SELECT id FROM tasks AS t
+   WHERE t.status = 'pending'
+     AND (t.assignee_id IS NULL OR t.assignee_id = :me)
+     AND (:scope IS NULL OR t.project = :scope)
+     AND (t.retry_after IS NULL OR t.retry_after <= :now)
+     AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id
+                      WHERE d.task_id = t.id AND p.status <> 'done')
+   ORDER BY t.priority DESC, (t.assignee_id IS NULL), t.id
    LIMIT 1;
-  UPDATE tasks SET status='in_progress', assignee_id=:me, updated_at=:now
+  UPDATE tasks SET status='in_progress', assignee_id=:me, attempts=attempts+1,
+                   lease_expires=:lease, session_id=:session, updated_at=:now
    WHERE id = :id AND status = 'pending';
   ```
-  Оба запроса в одной транзакции. `ORDER BY (assignee_id IS NULL), id` даёт «сначала адресованные
-  мне, потом общий пул», внутри группы FIFO. `AND status='pending'` в `UPDATE` — страховка на
-  случай, если сериализацию когда-нибудь ослабят.
-- `list_tasks` не отдаёт `result`, лимит зажат в `[1, 500]`. Счётчик незакрытых зависимостей
-  (`waiting_on`) считается подзапросом в том же SELECT — иначе список делал бы N+1.
-- `stats` считает внутри скоупа: иначе при выбранном проекте чипы дэшборда врут.
+  Both statements sit in one transaction. `AND status='pending'` in the `UPDATE`
+  is insurance should the serialisation ever be relaxed.
+- `list_tasks` does not return `result`, and the limit is clamped to `[1, 500]`.
+  The count of unmet dependencies (`waiting_on`) is a subquery in the same
+  SELECT — otherwise listing would turn into N+1.
+- `stats` counts inside the scope: otherwise, with a project selected, the
+  dashboard chips lie.
 
-**Аренда и повторы.** Захват ставит `lease_expires = now + lease_s` и увеличивает `attempts`.
-`heartbeat` продлевает срок, но только своей задаче и только пока она `in_progress`.
-`reap_expired()` раз в `NOTED_REAP_INTERVAL_S` возвращает просроченные задачи в `pending`, снимая
-исполнителя; если попытки исчерпаны — отправляет в `failed` с пометкой `dead_letter`, иначе задачу
-воскрешали бы вечно. Фоновая петля живёт в `main.py`: сборщик зовёт сервис, а не наоборот, поэтому
-слой сервисов остаётся без знания о планировщике.
+**Leases and retries.** A claim sets `lease_expires = now + lease_s` and bumps
+`attempts`. `heartbeat` extends the term, but only for your own task and only
+while it is `in_progress`. `reap_expired()` runs every `NOTED_REAP_INTERVAL_S`
+and returns overdue tasks to `pending`, dropping the holder; when attempts are
+exhausted it sends them to `failed` with a `dead_letter` mark, or they would be
+resurrected forever. The background loop lives in `main.py`: the collector calls
+the service, not the other way round, so the service layer stays ignorant of any
+scheduler.
 
-`set_status(failed)` при оставшихся попытках не пишет `failed`, а возвращает задачу в `pending`
-с `retry_after = now + backoff(attempts)`; backoff экспоненциальный с потолком.
+`set_status(failed)` with attempts left does not write `failed` — it returns the
+task to `pending` with `retry_after = now + backoff(attempts)`, with an
+exponential backoff and a ceiling.
 
-**Зависимости.** Выдача фильтруется подзапросом `NOT EXISTS (... p.status <> 'done')` — состояние
-«готова к выдаче» нигде не хранится и не может рассинхронизироваться. Блокировка (`blocked`) и её
-снятие — отдельные переходы, чтобы это было видно человеку и в журнале.
+**Identity (`services/agents.py`).** A key is stored as a sha256 hash: it is an
+issued secret of 256 random bits, there is nothing to guess, and a slow KDF is
+not needed. `identity_required()` counts revoked keys too — otherwise revoking
+the last key would silently reopen the queue to everyone.
 
-**Предел на создание.** Считается запросом по индексу `(created_by, created_at)` в той же
-транзакции — состояния в памяти нет, перезапуск ядра ничего не сбрасывает. Проверка идёт после
-поиска по `key`: идемпотентный повтор ничего не создаёт и резать его незачем.
+**Sessions.** A task is held by a session rather than by a timer: with a session
+present `claim` sets no lease at all. The session is renewed by the transport
+(the stdio adapter's background task, or any request carrying `Mcp-Session-Id`),
+so the model is not responsible for "I am alive" — it cannot be, while a
+ten-minute build runs. The owner of a task is the pair agent-plus-session, which
+gives fencing without a separate claim token.
 
-**Идентичность (`services/agents.py`).** Ключ хранится хешем sha256: это выданный секрет на 256
-случайных бит, подбирать нечего, медленный KDF тут не нужен. `identity_required()` считает и
-отозванные ключи — иначе отзыв последнего ключа молча открыл бы очередь всем.
+**Compare-and-set by default.** `set_status` without `if_status` fills in
+`in_progress`. An unconditional write is `force`, and a move into a terminal
+status releases the session — otherwise a late agent would overwrite a human's
+cancellation with its own `done`.
 
-**Сессии.** Задача держится сессией, а не таймером: в `claim` при заданной сессии аренда не
-ставится вовсе. Сессия продлевается транспортом (фоновая задача stdio-адаптера либо любой запрос
-с `Mcp-Session-Id`), поэтому модель не отвечает за «я жив» — она не может им заниматься, пока
-десять минут идёт сборка. Владелец задачи — пара «агент + сессия», и это даёт фенсинг без
-отдельного токена захвата.
+**Dependencies.** Dispatch filters on a `NOT EXISTS (... p.status <> 'done')`
+subquery, so "ready to be handed out" is never stored and cannot fall out of
+sync. Blocking (`blocked`) and unblocking are separate transitions so both are
+visible to a human and in the journal.
 
-**CAS по умолчанию.** `set_status` без `if_status` подставляет `in_progress`. Безусловная запись —
-`force`, и переход в терминальный статус снимает сессию, иначе опоздавший агент затёр бы отмену
-человека своим `done`.
+**The creation cap** is counted by an indexed query over `(created_by,
+created_at)` in the same transaction — no in-memory state, and restarting the
+core resets nothing. The check runs after the `key` lookup: an idempotent repeat
+creates nothing and there is nothing to cut.
 
-**Журнал.** `_log()` пишет в ту же транзакцию, что и изменение. Heartbeat намеренно не логируется:
-он частый и не несёт информации о переходе.
+**The journal.** `_log()` writes in the same transaction as the change.
+Heartbeats are deliberately not logged: they are frequent and carry no
+transition. `trim_journal()` drops entries of closed tasks by age.
 
-## 2. Конверт ответов (`models/envelope.py`)
+## 2. The response envelope (`models/envelope.py`)
 
-`Outcome` — строковый enum из таблицы в `SPEC.md`. `Envelope` — pydantic-модель с `ok`, `outcome`,
-`message` и полезной нагрузкой (`task` / `tasks` / `count` / `stats` / `projects` / `assignees`).
-Рядом — единственная на проект таблица `outcome → HTTP-код`.
+`Outcome` is a string enum from the table in `SPEC.md`. `Envelope` is a pydantic
+model with `ok`, `outcome`, `message` and a payload (`task` / `tasks` / `count` /
+`events` / `stats` / `projects` / `assignees`). Next to it sits the project's one
+and only `outcome → HTTP code` table.
 
-Конверт лежит в `models/`, потому что им пользуются все три доставки — JSON-роуты, MCP и адаптер:
-так форма ответа не разъезжается.
+The envelope lives in `models/` because all three delivery layers use it — JSON
+routes, MCP and the adapter — so the shape of an answer cannot drift.
 
-Сериализация идёт с `exclude_unset`: `task: null` остаётся, если его передали явно, а незаполненные
-поля в ответ не попадают.
+Serialisation uses `exclude_unset`: an explicit `task: null` survives, while
+fields nobody filled in stay out of the response.
 
-## 3. Ядро (`main.py`, `routes/`)
+## 3. The core (`main.py`, `routes/`)
 
-`create_app()` собирает приложение: роутеры, MCP-транспорт, статика дэшборда, middleware и
-обработчики ошибок. Это **фабрика**, а не модульный синглтон — менеджер сессий MCP можно запустить
-ровно один раз за свою жизнь, поэтому каждому приложению нужен свой.
+`create_app()` assembles the application: routers, the MCP transport, the
+dashboard's static files, middleware and error handlers. It is a **factory**
+rather than a module-level singleton — the MCP session manager may be run exactly
+once in its lifetime, so every application needs its own.
 
-`main.py` также держит фоновый сборщик аренд: задача создаётся в lifespan и снимается при
-остановке. Сборщик не умирает от одной ошибки — логирует и продолжает.
+`main.py` also owns the background lease collector: the task is created in the
+lifespan and cancelled on shutdown. The collector does not die on a single error —
+it logs and carries on.
 
-`routes/tasks.py` — роуты из таблицы в `SPEC.md`. Каждый: валидация pydantic, вызов сервиса через
-`anyio.to_thread.run_sync` (sqlite синхронный — нельзя блокировать event loop), упаковка в конверт.
+`routes/tasks.py` holds the routes from the table in `SPEC.md`. Each one:
+pydantic validation, a service call through `anyio.to_thread.run_sync` (sqlite is
+synchronous and must not block the event loop), and wrapping into the envelope.
 
-- Обработчики ошибок: `TaskError` → свой код и конверт; `RequestValidationError` →
-  `validation_error` (перекрыть дефолтный формат FastAPI, иначе агент получит чужую форму ответа);
-  `HTTPException` сохраняет исходный код ответа; всё непойманное → `internal_error` с id записи
-  в логе, без трейсбека наружу.
-- `utils/authorization.py`: если `NOTED_TOKEN` задан, требовать заголовок на `/api` и `/mcp`.
-  `/healthz` и дэшборд — без токена.
-- Статика монтируется **последней**, уже после роутеров, поэтому корень не перехватывает `/api`,
-  `/events` и `/mcp`. Каталог задаётся `NOTED_UI_DIR`.
+- Error handlers: `TaskError` becomes its own code and envelope;
+  `RequestValidationError` becomes `validation_error` (FastAPI's own format is
+  overridden, or an agent would get somebody else's shape of answer);
+  `HTTPException` keeps its original status code; anything uncaught becomes
+  `internal_error` with a log entry id and no traceback on the wire.
+- `utils/authorization.py` turns headers into a principal for `/api` and `/mcp`.
+  `/healthz` and the dashboard need no header.
+- The static files are mounted **last**, after the routers, so the root does not
+  swallow `/api`, `/events` or `/mcp`. The directory comes from `NOTED_UI_DIR`.
 
-## 4. Событийные ожидания (`utils/events.py`)
+## 4. Waiting on events (`utils/events.py`)
 
-Два `asyncio.Condition` на процесс: `available` (появилась работа — будит `claim`) и `changed`
-(состояние изменилось как-нибудь — будит SSE-потоки дэшборда). Создание задачи и возврат в
-`pending` дёргают оба, захват и прочие смены статуса — только `changed`.
+Two `asyncio.Condition`s per process: `available` (work appeared — wakes `claim`)
+and `changed` (the state moved at all — wakes the dashboard's SSE streams).
+Creating a task and returning one to `pending` pull both; claiming and other
+status changes pull only `changed`.
 
-Захват с ожиданием: попробовать забрать → если пусто и `timeout_s > 0`, ждать на `Condition`
-с остатком таймаута → после пробуждения пробовать снова (пробуждение не значит, что задача
-досталась именно этому ждущему) → по дедлайну вернуть `empty`. `timeout_s` зажат сверху (300 с).
+Claiming with a wait: try to take a task → if empty and `timeout_s > 0`, wait on
+the condition for the remaining time → try again once woken (being woken does not
+mean the task went to this waiter) → answer `empty` at the deadline. `timeout_s`
+is clamped to 300 seconds.
 
-## 5. MCP: два транспорта
+## 5. MCP: two transports
 
-**По HTTP (`routes/mcp.py`) — основной.** `MCPServer` из SDK, транспорт streamable-http,
-монтируется на `/mcp`. Инструменты зовут те же сервисы, что и JSON-роуты. Ядро уже слушает порт,
-поэтому агенту не нужен отдельный процесс: контейнер поднялся — MCP доступен.
+**Over HTTP (`routes/mcp.py`) — the main one.** An `MCPServer` from the SDK on
+the streamable-http transport, mounted at `/mcp`. The tools call the same
+services the JSON routes do. The core already listens on a port, so an agent
+needs no separate process: the container is up, MCP is there.
 
-Менеджер сессий живёт в lifespan приложения (`session_manager.run()`), и именно из-за его
-«запустить можно один раз» приложение собирается фабрикой.
+The session manager lives in the application lifespan
+(`session_manager.run()`), and it is exactly its run-once rule that makes the
+application a factory.
 
-**По stdio (`mcp_adapter/`) — для клиентов без HTTP-транспорта.** Тонкий процесс: собрать тело,
-дёрнуть `httpx`, вернуть ответ как есть. Логики и доступа к базе нет. `httpx.ConnectError`
-превращается в конверт `api_unavailable` с адресом API в `message`, а не в таймаут и трейсбек.
+**Over stdio (`mcp_adapter/`) — for clients without the HTTP transport.** A thin
+process: build a body, call `httpx`, return the answer as it is. No logic and no
+database access. An `httpx.ConnectError` turns into an `api_unavailable` envelope
+carrying the API address rather than a timeout and a traceback. The adapter also
+renews its session in the background, which is why it stays a separate process.
 
-Описания инструментов лежат в `utils/tool_docs.py` — один источник для обоих транспортов, иначе
-тексты, которые видит модель, разъедутся. Жёсткие исходы (`validation_error`, `unauthorized`,
-`api_unavailable`, `internal_error`) поднимаются как ошибка инструмента; `not_found`,
-`status_conflict` и `empty` возвращаются обычным результатом — это штатные ответы.
+Tool descriptions live in `utils/tool_docs.py` — one source for both transports,
+or the texts a model reads would drift apart. Hard outcomes (`validation_error`,
+`unauthorized`, `forbidden`, `rate_limited`, `api_unavailable`, `internal_error`)
+are raised as tool errors; `not_found`, `status_conflict` and `empty` come back as
+ordinary results, because they are ordinary answers.
 
-## 6. Дэшборд (`dashboard/`)
+## 6. The dashboard (`dashboard/`)
 
-React + TypeScript на astralyx-ui. Компоненты кита копируются в репозиторий
-(`npx astralyx-ui add …`), а не подключаются зависимостью — код наш, обновлять нечего.
+React and TypeScript on astralyx-ui. Kit components are copied into the
+repository (`npx astralyx-ui add …`) rather than pulled in as a dependency — the
+code is ours and there is nothing to upgrade.
 
-- `src/api.ts` — типизированный клиент к `/api`. Разбирает конверт: `ok=false` превращается в
-  `ApiError` с `outcome`, недоступное ядро — в понятное сообщение, а не в «Failed to fetch».
-- `src/hooks.ts` — фильтры читаются из query-строки и пишутся обратно (`history.replaceState`),
-  поэтому ссылка на отфильтрованный вид работает; `useDashboard` тянет список и обзор одним
-  заходом; `useLive` держит `EventSource` и зовёт перезагрузку по событию; `useNearBottom` через
-  `IntersectionObserver` догружает следующую порцию, когда низ списка подошёл к экрану.
-- Подгрузка идёт курсором `before_id`, а не смещением: пока листают, в очередь прилетают новые
-  задачи, и смещение начало бы пропускать строки. Живое обновление перечитывает уже открытое окно
-  целиком (до 500 строк) — так список не схлопывается до первой страницы после каждого события,
-  а хвост за потолком остаётся как загрузился.
-- `src/parts/` — `FilterBar`, `TaskTable`, `NewTaskDialog`, `TaskDialog` (`?task=<id>` в URL),
-  `ConnectDialog` (адрес MCP, команда и конфиг с копированием), `LoginScreen` (вход по
-  `NOTED_TOKEN`: браузер не шлёт заголовков, поэтому у дэшборда кука).
-- Марка в шапке — `Wordmark` из ui-kit (инлайновый SVG с моргающими веками, наследует
-  `currentColor`), вертикальный разделитель и название продукта справа. Кейфреймы моргания лежат
-  в `src/index.css`; при `prefers-reduced-motion` веки просто закрыты. Иконки — те же файлы,
-  что у кита.
-- Сборка кладёт статику в `dashboard/dist`, ядро отдаёт её с корня.
+- `src/api.ts` — a typed client to `/api`. It unpacks the envelope: `ok=false`
+  becomes an `ApiError` carrying the `outcome`, and an unreachable core becomes a
+  readable message rather than "Failed to fetch".
+- `src/hooks.ts` — filters are read from the query string and written back
+  (`history.replaceState`), so a link to a filtered view works; `useDashboard`
+  fetches the list and the overview in one go; `useLive` holds an `EventSource`
+  and triggers a reload; `useNearBottom` pulls the next page through an
+  `IntersectionObserver` once the bottom of the list approaches.
+- Paging uses the `before_id` cursor rather than an offset: new tasks keep
+  arriving while somebody scrolls, and an offset would start skipping rows. A
+  live update re-reads the whole open window (up to 500 rows), so the list does
+  not collapse to the first page after every event, and the tail past the ceiling
+  stays as it loaded.
+- `src/parts/` — `FilterBar`, `TaskTable`, `NewTaskDialog`, `TaskDialog`
+  (`?task=<id>` in the URL), `ConnectDialog` (the MCP address, command and config
+  with copy buttons), `LoginScreen` (signing in with `NOTED_TOKEN`: a browser
+  sends no headers, so the dashboard gets a cookie).
+- The mark in the header is `Wordmark` from the ui-kit (an inline SVG with
+  blinking eyelids inheriting `currentColor`), a vertical separator and the
+  product name. The blink keyframes are in `src/index.css`; under
+  `prefers-reduced-motion` the eyelids simply stay closed. The icons are the same
+  files the kit uses.
+- The build puts static files into `dashboard/dist`, which the core serves from
+  the root.
 
-Разработка фронта: `npm run dev` поднимает Vite на 5173 и проксирует `/api` и `/events` в ядро,
-так что бэкенд не нужно пересобирать на каждое изменение.
+Frontend development: `npm run dev` runs Vite on 5173 and proxies `/api` and
+`/events` to the core, so the backend needs no rebuild per change.
 
-## 7. Упаковка и запуск
+## 7. The event stream
 
-`deploy/Dockerfile` собирается в два этапа: Node ставит зависимости фронтенда и собирает `dist`,
-дальше Python-образ забирает **только** готовый каталог — ни Node, ни `node_modules` в рантайм
-не уезжают. База лежит в томе `/data`, чтобы пересборка не стирала задачи.
+`routes/live.py` serves the journal as SSE: a frame's `id` is the entry number
+and the cursor at once. Reconnecting with `Last-Event-ID` or `?after=` replays
+what was missed, which makes the stream usable for integrations rather than only
+for lighting up the dashboard. A full batch is read without sleeping — that means
+the stream is behind and catching up; an empty one waits on the condition with a
+keepalive every 20 seconds.
+
+## 8. Packaging and running
+
+`deploy/Dockerfile` builds in two stages: Node installs the frontend's
+dependencies and builds `dist`, then the Python image takes **only** the finished
+directory — neither Node nor `node_modules` reaches the runtime. The database
+lives in the `/data` volume so a rebuild does not wipe the tasks.
 
 ```
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-`HEALTHCHECK` дёргает `/healthz`, так что `docker ps` показывает не только «запущен»,
-но и «отвечает».
+`HEALTHCHECK` polls `/healthz`, so `docker ps` shows not only "running" but
+"answering".
 
-`workers=1` зашит в `main()` и прокомментирован: несколько воркеров = несколько писателей =
-возврат к исходной межпроцессной гонке.
+`workers=1` is baked into `main()` and commented: several workers would mean
+several writers and bring back the cross-process race.
 
-Агент подключается по HTTP — ничего ставить не нужно:
+An agent connects over HTTP with nothing to install:
 
 ```
 claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 ```
 
-Клиенту без HTTP-транспорта остаётся stdio-адаптер (`noted-mcp` из того же образа либо из venv).
+A client without the HTTP transport still has the stdio adapter (`noted-mcp`,
+from the same image or from a venv).
 
-## 7a. Поток событий
+## 9. Tests
 
-`routes/live.py` отдаёт журнал как SSE: `id` кадра — это номер записи, он же курсор.
-Переподключение с `Last-Event-ID` или `?after=` доигрывает пропущенное, поэтому поток годится для
-интеграций, а не только для подсветки дэшборда. Полная пачка читается без сна — значит поток
-отстал и догоняет; пустая ждёт на `Condition` с keepalive раз в 20 секунд.
+`pytest`, with the database in `tmp_path` through `NOTED_DB`. The test tree
+mirrors the code tree.
 
-## 8. Тесты
+- `services/test_tasks.py` — idempotency by `key`, CAS and conflict, addressed
+  tasks against the pool, the strictness of a project scope, filters,
+  `stale_seconds`, migrating an old database, the cursor, and a concurrent claim
+  across threads. No application is started.
+- `services/test_lease.py` — an expired lease returns the task to the pool, a
+  heartbeat holds it, a foreign heartbeat and a foreign close get `not_owner`,
+  `lease_s=0` is never collected.
+- `services/test_retry.py` — a failure returns to the queue with a pause, the
+  pause is respected on dispatch, exhausted attempts stay `failed`, and an
+  expired lease on the last attempt goes to the dead letter.
+- `services/test_deps.py` — a task waits for its predecessors, a failure blocks,
+  a success unblocks, and dispatch order is priority, then addressing, then FIFO.
+- `services/test_journal.py` — the whole path of a task is visible, and entries
+  do not mix between tasks.
+- `services/test_cas.py` — safe behaviour by default, and `force` as the explicit
+  way to write unconditionally.
+- `services/test_identity.py` — a key proves identity, revocation takes it away,
+  the scope is enforced, a zombie session cannot write, and a dead session frees
+  everything at once.
+- `services/test_rate_limit.py` — a flood from one author is cut, other budgets
+  are untouched, anonymous authors share a bucket, an idempotent repeat passes.
+- `routes/test_tasks.py` — a case per outcome, HTTP codes, the token middleware,
+  the long poll.
+- `routes/test_identity_http.py` — the key decides who you are, the scope is
+  enforced, a revoked key stops working, a transport session holds a task without
+  a lease, a second instance cannot write, and the dashboard has its own door.
+- `routes/test_events_contract.py` — events carry the whole transition, the
+  cursor replays what was missed, and without a cursor the past is not replayed.
+- `routes/test_dashboard.py` — `/api/stats` carries the chrome data and the built
+  dashboard is served from the root.
+- `routes/test_mcp_http.py` — a real SDK client: the tool list, a full cycle,
+  errors and normal outcomes.
+- `mcp/test_adapter.py` — the same through the stdio adapter, and the behaviour
+  with the core switched off.
 
-`pytest`, база в `tmp_path` через `NOTED_DB`. Дерево тестов повторяет дерево кода.
+Streaming checks (SSE, MCP) run against a live uvicorn from the `live_server`
+fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 
-- `services/test_tasks.py` — идемпотентность по `key`, CAS и конфликт, приоритет адресных задач над
-  пулом, строгость скоупа проекта, фильтры, `stale_seconds`, миграция старой базы, конкурентный
-  захват в потоках. Приложение не поднимается.
-- `services/test_lease.py` — истёкшая аренда возвращает задачу в пул, heartbeat её удерживает,
-  чужой heartbeat и чужое закрытие получают `not_owner`, `lease_s=0` не собирается никогда.
-- `services/test_retry.py` — провал возвращает в очередь с паузой, пауза соблюдается при выдаче,
-  исчерпание попыток оставляет в `failed`, истёкшая аренда на последней попытке уходит в dead letter.
-- `services/test_deps.py` — задача ждёт предшественников, провал предшественника блокирует, успех
-  разблокирует, приоритет сортирует внутри группы, но не отменяет адресность.
-- `services/test_journal.py` — весь путь задачи виден в журнале, записи не смешиваются между задачами.
-- `services/test_rate_limit.py` — поток от одного автора режется, чужие бюджеты не задеты,
-  безымянные делят ведро, идемпотентный повтор проходит, предел выключается нулём.
-- `routes/test_tasks.py` — по кейсу на каждый `outcome`, коды HTTP, токен-middleware, long-poll.
-- `routes/test_dashboard.py` — SSE присылает событие после создания задачи, `/api/stats` отдаёт
-  счётчики вместе со списками проектов и исполнителей, собранный дэшборд отдаётся с корня.
-- `routes/test_mcp_http.py` — настоящий клиент из SDK: список инструментов, полный цикл
-  (создать → захватить → завершить → конфликт → прочитать), ошибки и штатные исходы.
-- `routes/test_identity_http.py` — ключ решает, кто вы; скоуп принудителен; отозванный ключ не
-  работает; сессия транспорта держит задачу без аренды; второй экземпляр агента не пишет;
-  у дэшборда свой вход.
-- `routes/test_events_contract.py` — события несут переход целиком, курсор доигрывает пропущенное,
-  без курсора прошлое не переигрывается.
-- `services/test_cas.py`, `test_identity.py` — безопасное поведение по умолчанию и фенсинг.
-- `mcp/test_adapter.py` — то же через stdio-адаптер и поведение при выключенном ядре.
+## Acceptance checklist
 
-Потоковые проверки (SSE, MCP) идут против живого uvicorn из фикстуры `live_server`: ASGI-транспорт
-в памяти не отдаёт поток инкрементально.
+- [ ] Two parallel claims on one task: exactly one `claimed`, the other `empty`.
+- [ ] Two `set_status(..., if_status="in_progress")`: the second gets
+      `status_conflict` and sees the current state.
+- [ ] Creating twice under the same `key`: `outcome="exists"` and no second row.
+- [ ] `claim_task(timeout_s=10)` wakes on a new task within milliseconds.
+- [ ] An agent that crashed in `in_progress` is found by
+      `get_tasks(stale_seconds=...)`.
+- [ ] An agent dies holding a task: the lease expires and the task returns to the
+      queue with no human involved.
+- [ ] A failure with `max_attempts` retries with a growing pause and settles in
+      `failed` once attempts run out.
+- [ ] A task with an open dependency is handed to nobody and shows as waiting.
+- [ ] A foreign agent can neither close nor extend a task it does not hold.
+- [ ] A second instance of the same agent gets `stale_session`.
+- [ ] A scoped agent neither sees nor takes foreign or unscoped tasks.
+- [ ] A database created before `project` existed opens and extends itself.
+- [ ] `/mcp` answers an SDK client right after the container starts.
+- [ ] With the core switched off the stdio adapter answers `api_unavailable`.
+- [ ] The dashboard shows tasks, filters live in the URL, status changes from the
+      row menu, and a long list pages by scrolling without collapsing on a live
+      update.
+- [ ] The image carries the built frontend but no Node; tasks survive recreating
+      the container.
+- [ ] `grep -r "sqlite3\|SELECT" api/routes mcp_adapter` is empty: no SQL escaped
+      the services.
 
-## Чеклист приёмки
+## Risks and answers
 
-- [ ] Два параллельных `claim` на одну задачу: ровно один `claimed`, второй `empty`.
-- [ ] Два `set_status(..., if_status="in_progress")`: второй получает `status_conflict` и видит
-      актуальное состояние задачи.
-- [ ] Повтор создания с тем же `key`: `outcome="exists"`, второй задачи в базе нет.
-- [ ] `claim_task(timeout_s=10)` просыпается от новой задачи за миллисекунды.
-- [ ] Агент, упавший в `in_progress`, находится через `get_tasks(stale_seconds=...)`.
-- [ ] Агент со скоупом проекта не видит и не забирает ни чужие задачи, ни задачи без проекта.
-- [ ] База, созданная до появления колонки `project`, открывается и дополняется без ручных действий.
-- [ ] `/mcp` отвечает клиенту из SDK сразу после старта контейнера, без отдельного процесса.
-- [ ] Ядро выключено — stdio-адаптер отдаёт `api_unavailable`, агент не падает.
-- [ ] Дэшборд показывает задачи, фильтры живут в URL, статус меняется из меню строки.
-- [ ] Длинный список догружается скроллом до конца и не схлопывается при живом обновлении.
-- [ ] Образ содержит собранный фронтенд, но не содержит Node; задачи переживают пересоздание
-      контейнера.
-- [ ] Агент умер с задачей в работе: аренда истекла — задача вернулась в очередь сама, без человека.
-- [ ] Провал с `max_attempts` повторяется с растущей паузой и оседает в `failed`, когда попытки кончились.
-- [ ] Задача с незакрытой зависимостью не выдаётся никому и видна в списке как ждущая.
-- [ ] Чужой агент не может закрыть или продлить занятую задачу.
-- [ ] Журнал показывает полный путь задачи, включая возвраты и повторы.
-- [ ] `grep -r "sqlite3\|SELECT" api/routes mcp_adapter` пуст: SQL не утёк из сервисов.
-
-## Риски и решения
-
-| Риск | Решение |
+| Risk | Answer |
 |---|---|
-| Несколько воркеров uvicorn вернут межпроцессную гонку | `workers=1` в коде + комментарий + пункт в чеклисте |
-| Синхронный sqlite блокирует event loop | все вызовы сервисов через `anyio.to_thread.run_sync` |
-| Долгий long-poll держит соединение и поток | ожидание на `Condition` (поток не занят), `timeout_s` зажат 300 с |
-| Менеджер сессий MCP запускается повторно | приложение собирается фабрикой, у каждого свой сервер |
-| Ядро не поднято, агент висит | stdio-адаптер отдаёт `api_unavailable` с адресом в `message` |
-| Крупные `task`/`result` раздувают контекст агента | `result` только в `get_task`, лимит списка 500 |
-| Открытые SSE-соединения копятся | keepalive раз в 20 с, отвал соединения закрывает генератор |
-| Задача воскресает бесконечно | попытка засчитывается при захвате; исчерпание → dead letter |
-| Сборщик аренд падает и тишина | исключение логируется, петля продолжается |
-| Агент закрывает чужую работу | `assignee_id` в `set_status`/`heartbeat`, исход `not_owner` |
-| Задача в pending, которую никто не берёт | `waiting_on` в списке показывает незакрытые зависимости |
-| Зациклившийся агент заливает очередь | предел создания по автору, `rate_limited` приходит как ошибка инструмента |
-| Агент называется чужим именем | `assignee_id` и `created_by` выводятся из ключа |
-| Два процесса с одним ключом неразличимы | владелец — пара «агент + сессия», фенсинг по сессии |
-| Модель не может слать heartbeat в долгом шаге | сессию продлевает транспорт, а не модель |
-| Забытый `if_status` ломает инварианты | CAS по умолчанию, безусловная запись — явный `force` |
-| Отзыв последнего ключа открывает очередь | `identity_required()` считает и отозванные ключи |
-| Журнал растёт бесконечно | подрезка записей закрытых задач по возрасту |
-| Настройки расползаются по коду | всё окружение читается только в `api/settings.py` |
-| Длинный список тянет тысячи строк разом | подгрузка порциями по 50 курсором, окно живого обновления ограничено 500 |
-| Описания инструментов разъезжаются между транспортами | общий `utils/tool_docs.py` |
-| Логика расползается в роуты | сервисы не импортируют FastAPI; их тесты не поднимают приложение |
-| Дэшборд перехватывает /api, /events или /mcp | статика монтируется последней, после роутеров |
-| Фронтенд знает адрес ядра | ходит по относительным путям; в разработке адрес подставляет прокси Vite |
-| Контейнер слушает 0.0.0.0 и уезжает в сеть | публикуется только `127.0.0.1:8787`, `NOTED_TOKEN` на `/api` и `/mcp` |
-| Пересборка образа стирает задачи | база в томе `/data`, а не в слое образа |
+| Several uvicorn workers bring back the cross-process race | `workers=1` in code, a comment, and a checklist item |
+| Synchronous sqlite blocks the event loop | every service call goes through `anyio.to_thread.run_sync` |
+| A long poll ties up a connection and a thread | waiting on a `Condition` (the thread stays free), `timeout_s` clamped to 300 s |
+| The MCP session manager is run twice | the application is built by a factory; each one gets its own server |
+| The core is down and the agent hangs | the stdio adapter answers `api_unavailable` with the address in `message` |
+| A task is resurrected forever | the attempt counts on claim; exhaustion means a dead letter |
+| The lease collector dies quietly | the exception is logged and the loop continues |
+| An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |
+| An agent takes another's name | `assignee_id` and `created_by` follow from the key |
+| Two processes with one key are indistinguishable | the owner is agent-plus-session; fencing by session |
+| The model cannot heartbeat during a long step | the transport renews the session, not the model |
+| A forgotten `if_status` breaks invariants | CAS by default; an unconditional write is an explicit `force` |
+| Revoking the last key reopens the queue | `identity_required()` counts revoked keys too |
+| A looping agent floods the queue | a per-author creation cap; `rate_limited` arrives as a tool error |
+| The journal grows without end | entries of closed tasks are trimmed by age |
+| A pending task nobody can take | `waiting_on` in the list shows the open dependencies |
+| A long list pulls thousands of rows at once | pages of 50 by cursor; the live window is capped at 500 |
+| Large `task`/`result` bloat an agent's context | `result` only in `get_task`, list limit 500 |
+| Open SSE connections pile up | keepalive every 20 s; a dropped connection closes the generator |
+| The dashboard swallows /api, /events or /mcp | static files are mounted last, after the routers |
+| The frontend knows the core's address | it uses relative paths; in development the Vite proxy supplies the address |
+| The container listens on 0.0.0.0 and leaks into the network | only `127.0.0.1:8787` is published; `NOTED_TOKEN` guards `/api` and `/mcp` |
+| Rebuilding the image wipes the tasks | the database is in the `/data` volume, not in an image layer |
+| Settings scatter across the code | the environment is read only in `api/settings.py` |

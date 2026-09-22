@@ -39,7 +39,7 @@ def _unavailable(detail: str) -> dict[str, Any]:
     return {
         "ok": False,
         "outcome": "api_unavailable",
-        "message": f"ядро noted не отвечает на {api_url()}: {detail}. Запустите `noted-api`.",
+        "message": f"the noted core is not answering at {api_url()}: {detail}. Start `noted-api`.",
         "task": None,
     }
 
@@ -49,7 +49,7 @@ async def request(method: str, path: str, *, json: Any = None, params: Any = Non
         async with httpx.AsyncClient(base_url=api_url(), headers=_headers(), timeout=timeout or REQUEST_TIMEOUT) as client:
             response = await client.request(method, path, json=json, params=params)
     except httpx.TimeoutException as exc:
-        return _unavailable(f"таймаут ({exc.__class__.__name__})")
+        return _unavailable(f"timed out ({exc.__class__.__name__})")
     except httpx.HTTPError as exc:
         return _unavailable(str(exc) or exc.__class__.__name__)
 
@@ -59,6 +59,6 @@ async def request(method: str, path: str, *, json: Any = None, params: Any = Non
         return {
             "ok": False,
             "outcome": "internal_error",
-            "message": f"ядро вернуло не-JSON, код {response.status_code}",
+            "message": f"the core returned non-JSON, status {response.status_code}",
             "task": None,
         }

@@ -28,9 +28,9 @@ import {
 } from '@/hooks'
 
 const LIVE_LABEL: Record<string, string> = {
-  connecting: 'подключаюсь…',
+  connecting: 'connecting…',
   live: '',
-  down: 'нет связи с ядром',
+  down: 'no connection to the core',
 }
 
 export function App() {
@@ -58,11 +58,11 @@ export function App() {
     async (id: number, status: Status) => {
       try {
         await api.setStatus(id, status)
-        toast({ title: `Задача #${id} → ${status}`, color: 'neutral' })
+        toast({ title: `Task #${id} → ${status}`, color: 'neutral' })
         reload()
       } catch (cause) {
         toast({
-          title: 'Статус не сменился',
+          title: 'Status unchanged',
           description: cause instanceof Error ? cause.message : undefined,
           color: 'destructive',
         })
@@ -88,7 +88,7 @@ export function App() {
         <div className="mx-auto flex h-13 max-w-6xl items-center justify-between gap-4 px-5">
           <a
             href="/"
-            aria-label="Noted, к списку задач"
+            aria-label="Noted, back to the task list"
             className="focus-visible:ring-ring flex items-center gap-2.5 rounded-lg px-1 py-1 focus-visible:ring-2 focus-visible:outline-none"
           >
             <Wordmark className="h-5" />
@@ -119,7 +119,7 @@ export function App() {
 
             <Button size="sm" onClick={() => setComposing(true)}>
               <Plus />
-              Новая задача
+              New task
             </Button>
           </div>
         </div>
@@ -127,16 +127,16 @@ export function App() {
 
       <main className="mx-auto flex max-w-6xl flex-col gap-5 px-5 py-6">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat bordered animate={false} size="sm" label="всего" value={stats.total} />
-          <Stat bordered animate={false} size="sm" label="в работе" value={stats.in_progress} />
-          <Stat bordered animate={false} size="sm" label="в очереди" value={stats.pending} />
+          <Stat bordered animate={false} size="sm" label="total" value={stats.total} />
+          <Stat bordered animate={false} size="sm" label="in progress" value={stats.in_progress} />
+          <Stat bordered animate={false} size="sm" label="queued" value={stats.pending} />
           <Stat
             bordered
             animate={false}
             size="sm"
-            label="залипло"
+            label="stuck"
             value={stuck}
-            hint={stuck > 0 ? 'дольше 5 минут без обновления' : undefined}
+            hint={stuck > 0 ? 'no update for over five minutes' : undefined}
           />
         </div>
 
@@ -179,9 +179,9 @@ export function App() {
 
         <p className="text-muted-foreground flex justify-between font-mono text-xs">
           <span>
-            показано {tasks.length} из {stats.total}
+            showing {tasks.length} of {stats.total}
           </span>
-          {!more && tasks.length > 0 && <span>всё показано</span>}
+          {!more && tasks.length > 0 && <span>all shown</span>}
         </p>
       </main>
 

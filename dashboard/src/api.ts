@@ -73,11 +73,11 @@ async function call(path: string, init?: RequestInit): Promise<Envelope> {
       headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
     })
   } catch {
-    throw new ApiError('ядро не отвечает — проверьте, что noted-api запущен', 'api_unavailable')
+    throw new ApiError('the core is not answering — check that noted-api is running', 'api_unavailable')
   }
 
   const body = (await response.json().catch(() => null)) as Envelope | null
-  if (!body) throw new ApiError(`ядро ответило ${response.status} без тела`, 'internal_error')
+  if (!body) throw new ApiError(`the core answered ${response.status} with no body`, 'internal_error')
   // `empty` and `not_found` are normal outcomes, but the dashboard treats them
   // as failed calls too, so only ok=false ever reaches this point.
   if (!body.ok) throw new ApiError(body.message ?? body.outcome, body.outcome)

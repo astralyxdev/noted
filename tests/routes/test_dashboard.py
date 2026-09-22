@@ -21,8 +21,8 @@ def client():
 
 def test_stats_carry_the_chrome_data(client):
     """One request is enough for the header: counters, projects, assignees."""
-    service.create({"title": "одна"}, project="noted", assignee_id="agent-1")
-    service.create({"title": "чужая"}, project="abot")
+    service.create({"title": "one"}, project="noted", assignee_id="agent-1")
+    service.create({"title": "foreign"}, project="abot")
 
     payload = client.get("/api/stats").json()
     assert payload["stats"]["total"] == 2
@@ -33,7 +33,7 @@ def test_stats_carry_the_chrome_data(client):
     assert scoped["stats"]["total"] == 1, "counters are scoped to the project"
 
 
-@pytest.mark.skipif(not (main.ui_dir() / "index.html").exists(), reason="дэшборд не собран")
+@pytest.mark.skipif(not (main.ui_dir() / "index.html").exists(), reason="dashboard is not built")
 def test_built_dashboard_is_served(client):
     page = client.get("/")
     assert page.status_code == 200

@@ -12,7 +12,7 @@ from api.services import tasks as service
 
 
 def test_forgotten_if_status_no_longer_breaks_invariants():
-    task, _ = service.create({"title": "закрытая"})
+    task, _ = service.create({"title": "closed"})
     service.claim("agent-1")
     service.set_status(task.id, "done")
 
@@ -28,7 +28,7 @@ def test_forgotten_if_status_no_longer_breaks_invariants():
 
 def test_executor_reports_from_in_progress_without_saying_so():
     """The usual executor path needs no extra words: it is in_progress already."""
-    task, _ = service.create({"title": "обычная"})
+    task, _ = service.create({"title": "ordinary"})
     service.claim("agent-1")
 
     outcome, done = service.set_status(task.id, "done", result={"ok": True})
@@ -38,7 +38,7 @@ def test_executor_reports_from_in_progress_without_saying_so():
 
 def test_force_is_the_explicit_way_to_write_unconditionally():
     """A human cancels a task in any state from the dashboard — but says so."""
-    task, _ = service.create({"title": "из очереди"})
+    task, _ = service.create({"title": "queued"})
 
     outcome, _ = service.set_status(task.id, "cancelled")
     assert outcome is Outcome.status_conflict, "no unconditional write by default"
@@ -49,7 +49,7 @@ def test_force_is_the_explicit_way_to_write_unconditionally():
 
 
 def test_explicit_if_status_still_wins():
-    task, _ = service.create({"title": "своя проверка"})
+    task, _ = service.create({"title": "an own check"})
     outcome, _ = service.set_status(task.id, "blocked", if_status="pending")
     assert outcome is Outcome.updated
 
@@ -58,7 +58,7 @@ def test_finishing_releases_the_session_so_latecomers_cannot_overwrite():
     """A human cancelled the task; a returning agent must not overwrite that."""
     from api.services import agents
 
-    task, _ = service.create({"title": "спорная"})
+    task, _ = service.create({"title": "contested"})
     session = agents.open_session("agent-1", "stdio")
     service.claim("agent-1", session_id=session.id)
 

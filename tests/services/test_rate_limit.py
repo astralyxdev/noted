@@ -27,7 +27,7 @@ def test_runaway_author_is_stopped():
         service.create({"n": 99}, created_by="agent-loop")
 
     assert err.value.code is Outcome.rate_limited
-    assert "притормозите" in err.value.message
+    assert "slow down" in err.value.message
     assert len(service.list_tasks()) == 3, "the extra task was not created"
 
 
@@ -35,7 +35,7 @@ def test_authors_have_separate_budgets():
     for n in range(3):
         service.create({"n": n}, created_by="agent-loop")
 
-    fine, created = service.create({"title": "чужая работа"}, created_by="agent-other")
+    fine, created = service.create({"title": "someone else's work"}, created_by="agent-other")
     assert created is True
     assert fine.created_by == "agent-other"
 

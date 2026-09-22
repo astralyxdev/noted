@@ -16,7 +16,7 @@ def test_key_proves_identity_and_revocation_takes_it_away():
     issued = agents.issue("agent-1", projects=["noted"])
 
     assert agents.resolve(issued.key).id == "agent-1"
-    assert agents.resolve("noted_подделка") is None, "an unknown key does not pass"
+    assert agents.resolve("noted_forged") is None, "an unknown key does not pass"
 
     agents.revoke("agent-1")
     assert agents.resolve(issued.key) is None
@@ -64,7 +64,7 @@ def test_scoped_claim_never_reaches_a_foreign_project():
 
 def test_zombie_with_an_old_session_cannot_write():
     """The same key can run twice. A task is held by an instance, not a name."""
-    task, _ = service.create({"title": "спорная"})
+    task, _ = service.create({"title": "contested"})
     first = agents.open_session("agent-1", "stdio")
     second = agents.open_session("agent-1", "stdio")
 
@@ -100,7 +100,7 @@ def test_dead_session_frees_everything_it_held_at_once(monkeypatch):
 def test_claim_inside_a_session_needs_no_lease():
     """A model cannot send heartbeats while a ten-minute build runs. Inside a
     session no task lease is set at all — the session holds it."""
-    service.create({"title": "долгая сборка"})
+    service.create({"title": "long build"})
     session = agents.open_session("agent-1", "stdio")
 
     taken = service.claim("agent-1", session_id=session.id)

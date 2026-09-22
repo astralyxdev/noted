@@ -85,7 +85,7 @@ def issue(name: str, projects: Sequence[str] | None = None, is_admin: bool = Fal
     """Register an agent and issue its key. The key is returned once."""
     agent_id = (name or "").strip()
     if not agent_id:
-        raise AgentError(Outcome.validation_error, "имя агента не может быть пустым")
+        raise AgentError(Outcome.validation_error, "an agent name must not be empty")
     scope = sorted({p.strip() for p in (projects or []) if p.strip()}) or None
     key = KEY_PREFIX + secrets.token_urlsafe(32)
     now = time.time()
@@ -93,7 +93,7 @@ def issue(name: str, projects: Sequence[str] | None = None, is_admin: bool = Fal
     with database.transaction() as conn:
         existing = conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
         if existing is not None:
-            raise AgentError(Outcome.validation_error, f"агент {agent_id} уже заведён")
+            raise AgentError(Outcome.validation_error, f"agent {agent_id} already exists")
         conn.execute(
             "INSERT INTO agents (id, key_hash, projects, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
             (agent_id, _hash(key), json.dumps(scope) if scope else None, int(is_admin), now),

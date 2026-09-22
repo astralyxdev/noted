@@ -1,58 +1,64 @@
-# Рецепты
+# Recipes
 
-Noted — примитив: очередь, в которой задача достаётся ровно одному исполнителю, переживает его
-смерть и помнит, что с ней происходило. Всё остальное — приёмка, изоляция рабочих копий, запуск
-агентов, формат задания — собирается поверх и остаётся за автором оркестрации.
+Noted is a primitive: a queue where a task goes to exactly one holder, survives
+that holder's death, and remembers what happened to it. Everything else —
+acceptance, isolating working copies, launching agents, the shape of a payload —
+is assembled on top and stays with whoever writes the orchestration.
 
-Здесь показано, что примитива для этого достаточно.
+What follows shows the primitive is enough for that.
 
-## Приёмка: задача-верификатор
+## Acceptance: a verifier task
 
-`done` означает ровно одно: исполнитель сказал «готово». LLM-агенты уверенно закрывают
-недоделанное, и отдельного статуса проверки в ядре нет намеренно — иначе следом понадобятся
-«кто проверяет», «сколько проверок», «что при разногласии».
+`done` means precisely one thing: the executor said it was done. LLM agents
+close unfinished work with confidence, and there is deliberately no review
+status in the core — the moment you add one you also need "who reviews", "how
+many reviews" and "what happens on disagreement".
 
-Проверка собирается зависимостями: работа и её приёмка — две задачи, вторая ждёт первую.
+Review is assembled from dependencies: the work and its acceptance are two
+tasks, and the second waits for the first.
 
 ```python
 work = set_task(
-    task={"goal": "Починить парсинг дат в отчёте", "acceptance": ["pytest tests/test_report.py", "даты в UTC"]},
+    task={"goal": "Fix date parsing in the report",
+          "acceptance": ["pytest tests/test_report.py", "dates in UTC"]},
     project="noted", max_attempts=2,
 )["task"]
 
 verify = set_task(
-    task={"goal": "Проверить приёмку", "verify_task": work["id"],
-          "acceptance": ["тесты зелёные", "диф не трогает миграции"]},
+    task={"goal": "Check acceptance", "verify_task": work["id"],
+          "acceptance": ["tests green", "the diff does not touch migrations"]},
     project="noted", depends_on=[work["id"]],
 )["task"]
 ```
 
-Верификатор не выдаётся никому, пока работа не стала `done`. Забирает его **другой** агент —
-тот же самый снова скажет «готово». Дальше два исхода:
+The verifier is handed to nobody until the work is `done`. A **different** agent
+takes it — the same one would say "done" again. Then there are two outcomes:
 
-- приёмка прошла — верификатор закрывается `done`, цепочка завершена;
-- приёмка не прошла — верификатор ставит задачу на доделку и закрывается:
+- acceptance passed: the verifier closes with `done` and the chain is complete;
+- acceptance failed: the verifier queues the rework and closes:
 
 ```python
-set_status(task_id=verify["id"], status="done", result={"verdict": "rejected", "why": "тесты красные"})
-set_task(task={"goal": "Доделать по замечаниям", "after": verify["id"], "notes": "…"},
+set_status(task_id=verify["id"], status="done",
+           result={"verdict": "rejected", "why": "tests are red"})
+set_task(task={"goal": "Address the review", "after": verify["id"], "notes": "…"},
          project="noted", priority=5)
 ```
 
-Почему не `failed` у верификатора: провал означает, что **проверка** не выполнилась, а не что
-работа плоха. Вердикт — это результат, а не статус.
+Why the verifier does not use `failed`: a failure means the **check** could not
+be carried out, not that the work is bad. A verdict is a result, not a status.
 
-## Изоляция репозитория: ветка в задании
+## Isolating the repository: a branch in the payload
 
-Noted разводит агентов по задачам, но не по файлам. Два агента на разных задачах, редактирующих
-один файл, поссорятся в рабочей копии, и очередь тут ни при чём.
+Noted separates agents by task, not by file. Two agents on different tasks
+editing the same file will collide in the working copy, and the queue has
+nothing to do with it.
 
-Решение — не пускать их в одну рабочую копию. Оркестратор выделяет ветку и worktree на задачу
-и кладёт их в задание:
+The answer is not to let them into one working copy. The orchestrator allocates
+a branch and a worktree per task and puts both in the payload:
 
 ```python
 set_task(task={
-    "goal": "Добавить экспорт в CSV",
+    "goal": "Add CSV export",
     "repo": "git@github.com:astralyxdev/noted.git",
     "branch": "task/412-csv-export",
     "worktree": "/var/agents/wt/412",
@@ -60,74 +66,81 @@ set_task(task={
 })
 ```
 
-Исполнитель работает только в своём worktree и сдаёт ветку, а не изменения в общей копии:
+The executor works only inside its own worktree and hands back a branch rather
+than changes in a shared copy:
 
 ```python
-set_status(task_id=412, status="done", result={"branch": "task/412-csv-export", "commit": "a1b2c3d"})
+set_status(task_id=412, status="done",
+           result={"branch": "task/412-csv-export", "commit": "a1b2c3d"})
 ```
 
-Слияние — отдельная задача с `depends_on` на все ветки, которые надо свести. Конфликт становится
-видимой работой в очереди, а не молчаливой порчей дерева.
+Merging is a separate task with `depends_on` on every branch that has to come
+together. A conflict then becomes visible work in the queue instead of silent
+damage to the tree.
 
-## Форма задания
+## The shape of a payload
 
-`task` — произвольный JSON, и это намеренно: ядро не знает, чем заняты ваши агенты. Но исполнители
-разных авторов не поймут друг друга, если формат не договорить. Работающий минимум:
+`task` is arbitrary JSON on purpose: the core does not know what your agents
+do. But executors written by different people will not understand each other
+unless the format is agreed. A working minimum:
 
 ```json
 {
-  "goal": "одна фраза: что должно стать правдой",
-  "acceptance": ["проверяемые условия, по которым принимают работу"],
+  "goal": "one sentence: what must become true",
+  "acceptance": ["checkable conditions the work is accepted by"],
   "context": {"files": ["api/routes/tasks.py"], "issue": 412},
   "artifacts": {"branch": "task/412-csv-export"}
 }
 ```
 
-`goal` и `acceptance` стоит держать обязательными в своей оркестрации: без критериев приёмки
-верификатор из первого рецепта не на что опереться.
+Keep `goal` and `acceptance` mandatory in your own orchestration: without
+acceptance criteria the verifier from the first recipe has nothing to stand on.
 
-## Супервизор: кто держит агентов живыми
+## A supervisor: who keeps agents alive
 
-Noted никого не запускает — он раздаёт работу тем, кто пришёл. Живых исполнителей держит кто-то
-снаружи. Минимальный супервизор на bash: N процессов, каждый крутит long-poll.
+Noted launches nobody — it hands work to whoever turns up. Keeping live
+executors around is somebody else's job. A minimal supervisor in bash: N
+processes, each on a long poll.
 
 ```bash
 #!/usr/bin/env bash
-# supervise.sh — держит N агентов на проекте
+# supervise.sh — keeps N agents on a project
 set -euo pipefail
-PROJECT=${1:?проект}
+PROJECT=${1:?project}
 COUNT=${2:-4}
 
 for i in $(seq 1 "$COUNT"); do
   (
     while true; do
-      claude -p "Возьми задачу через claim_task(project='$PROJECT', timeout_s=60) и выполни её.
-                 Отчитайся set_status с результатом. Если очередь пуста — просто завершись."
-      sleep 1   # пустая очередь: не крутимся вхолостую
+      claude -p "Take a task with claim_task(project='$PROJECT', timeout_s=60) and do it.
+                 Report back with set_status and a result. If the queue is empty, just exit."
+      sleep 1   # empty queue: do not spin
     done
   ) &
 done
 wait
 ```
 
-`timeout_s=60` — это long-poll: процесс спит на соединении, а не опрашивает очередь. Пустая очередь
-стоит одного висящего запроса в минуту, а не шестидесяти.
+`timeout_s=60` is the long poll: the process sleeps on a connection instead of
+polling the queue. An empty queue costs one hanging request a minute, not sixty.
 
-В проде вместо `&` — systemd-юнит или `docker compose --scale`, чтобы упавший агент поднимался сам.
-Сессия умершего процесса истечёт, и его задачи вернутся в очередь без вашего участия.
+In production replace `&` with a systemd unit or `docker compose --scale`, so a
+crashed agent comes back by itself. The session of a dead process expires and
+its tasks return to the queue without your involvement.
 
-## Интеграции: события вместо опроса
+## Integrations: events instead of polling
 
-Поток `/events` — публичный контракт с курсором. Клиент помнит номер последнего события и после
-обрыва просит продолжить с него, поэтому на событиях можно строить внешнюю логику, а не только
-подсвечивать дэшборд.
+The `/events` stream is a public contract with a cursor. A client remembers the
+number of the last event and, after a disconnect, asks to continue from it — so
+external logic can be built on events rather than on lighting up the dashboard.
 
 ```python
 import json, httpx
 
 cursor = 0
 while True:
-    with httpx.stream("GET", "http://127.0.0.1:8787/events", params={"after": cursor}, timeout=None) as stream:
+    with httpx.stream("GET", "http://127.0.0.1:8787/events",
+                      params={"after": cursor}, timeout=None) as stream:
         for line in stream.iter_lines():
             if not line.startswith("data: "):
                 continue
@@ -135,17 +148,21 @@ while True:
             cursor = event["id"]
 
             if event["event"] == "status" and event["to_status"] == "done":
-                notify_chat(f"задача {event['task_id']} закрыта агентом {event['actor']}")
+                notify_chat(f"task {event['task_id']} closed by {event['actor']}")
             if event["event"] == "dead_letter":
                 page_oncall(event["task_id"])
 ```
 
-Так же строятся запуск агента под появившуюся задачу (`event == "created"`) и связка с чатом.
-Ничего из этого не нужно добавлять в ядро — достаточно читать поток.
+Launching an agent for a task that just appeared (`event == "created"`) and
+wiring the queue to a chat are built the same way. None of it belongs in the
+core — reading the stream is enough.
 
-## Чего рецептами не закрыть
+## What recipes cannot cover
 
-- **Одна машина.** Ядро — один процесс: упало — встал рой. Репликации нет.
-- **Права внутри дэшборда.** Вход один, ролей нет: кто вошёл, тот администратор.
-- **Гонка за внешние ресурсы.** Если агентам нужен эксклюзив на что-то, кроме задачи (общий стенд,
-  лимит API), очередь об этом не знает — делайте это отдельной задачей-замком с `depends_on`.
+- **One machine.** The core is a single process: if it falls, the swarm stops.
+  There is no replication.
+- **Rights inside the dashboard.** There is one door and no roles: whoever signs
+  in is an admin.
+- **Contention over external resources.** If agents need exclusivity over
+  something other than a task — a shared environment, an API quota — the queue
+  knows nothing about it. Model it as a lock task with `depends_on`.

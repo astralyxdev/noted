@@ -19,7 +19,7 @@ def _read(lines, limit=12):
         elif line.startswith("data: "):
             frame["data"] = json.loads(line[6:])
             return frame
-    raise AssertionError("событие не пришло")
+    raise AssertionError("no event arrived")
 
 
 def test_events_carry_the_transition_not_just_a_ping(live_server):
@@ -30,7 +30,7 @@ def test_events_carry_the_transition_not_just_a_ping(live_server):
 
             created = httpx.post(
                 f"{live_server}/api/tasks",
-                json={"task": {"title": "событие"}, "created_by": "orchestrator"},
+                json={"task": {"title": "an event"}, "created_by": "orchestrator"},
                 timeout=5,
             ).json()["task"]
 
@@ -45,7 +45,7 @@ def test_events_carry_the_transition_not_just_a_ping(live_server):
 
 def test_reconnect_from_cursor_loses_nothing(live_server):
     """An integration reconnected: what it missed must arrive, not vanish."""
-    task = service.create({"title": "пока никто не слушал"})[0]
+    task = service.create({"title": "while nobody listened"})[0]
     service.claim("agent-1")
     service.set_status(task.id, "done", actor="agent-1")
 
@@ -59,14 +59,14 @@ def test_reconnect_from_cursor_loses_nothing(live_server):
 
 
 def test_without_a_cursor_only_new_events_arrive(live_server):
-    service.create({"title": "старое"})
+    service.create({"title": "old"})
 
     with httpx.Client(base_url=live_server, timeout=15) as client:
         with client.stream("GET", "/events") as stream:
             lines = stream.iter_lines()
             assert "retry:" in next(lines)
 
-            httpx.post(f"{live_server}/api/tasks", json={"task": {"title": "новое"}}, timeout=5)
+            httpx.post(f"{live_server}/api/tasks", json={"task": {"title": "new"}}, timeout=5)
             frame = _read(lines)
 
     assert frame["data"]["event"] == "created"

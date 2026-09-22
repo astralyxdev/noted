@@ -8,7 +8,7 @@ from api.services import tasks as service
 
 
 def test_journal_records_the_whole_life_of_a_task():
-    task, _ = service.create({"title": "путь"}, project="noted", created_by="orchestrator")
+    task, _ = service.create({"title": "the path"}, project="noted", created_by="orchestrator")
     service.claim("agent-1", lease_s=0.01)
     time.sleep(0.05)
     service.reap_expired()
@@ -30,8 +30,8 @@ def test_journal_records_the_whole_life_of_a_task():
 
 
 def test_journal_is_append_only_per_task():
-    one, _ = service.create({"title": "одна"})
-    two, _ = service.create({"title": "другая"})
+    one, _ = service.create({"title": "one"})
+    two, _ = service.create({"title": "another"})
     service.set_status(one.id, "cancelled", force=True)
 
     assert [e.event for e in service.events(one.id)] == ["created", "status"]

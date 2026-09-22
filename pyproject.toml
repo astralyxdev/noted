@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "noted"
 version = "0.2.0"
-description = "Таск-менеджер для агентов: FastAPI-ядро, MCP-адаптер, веб-дэшборд"
+description = "A task manager for agents: a FastAPI core, MCP, and a web dashboard"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

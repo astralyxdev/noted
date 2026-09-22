@@ -51,7 +51,7 @@ def live_server(monkeypatch):
         except httpx.HTTPError:
             time.sleep(0.05)
     else:
-        raise RuntimeError("ядро не поднялось")
+        raise RuntimeError("the core did not come up")
 
     monkeypatch.setenv("NOTED_API", base)
     yield base

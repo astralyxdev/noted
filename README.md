@@ -1,94 +1,102 @@
 # Noted
 
-Таск-менеджер для агентов. Ставит задачи, раздаёт их исполнителям без гонок, показывает,
-кто чем занят, и переживает падение любого из них.
+A task manager for agents. It queues work, hands each task to exactly one
+executor, survives the death of any of them, and shows who is doing what.
 
-Ядро — один процесс FastAPI поверх SQLite. MCP-сервер поднимается вместе с ним и слушает тот же
-порт, так что после `up -d` агента можно подключать сразу. Люди смотрят в веб-дэшборд, и всё это
-работает через один и тот же HTTP API.
+The core is a single FastAPI process over SQLite. An MCP server comes up with
+it on the same port, so an agent can connect right after `up -d`. People look
+at the web dashboard, and all of it runs through the same HTTP API.
 
 ```
-агенты ─────── MCP по HTTP (/mcp) ──────────>┌──────────────────────────────┐
+agents ──────── MCP over HTTP (/mcp) ───────>┌──────────────────────────────┐
                                              │      FastAPI + SQLite        │
-агенты ─MCP(stdio)─> адаптер ──HTTP─────────>│ API · MCP · SSE · дэшборд    │
+agents ─MCP(stdio)─> adapter ──HTTP─────────>│ API · MCP · SSE · dashboard  │
                                              │                              │
-браузер ──── статика + /api + SSE ──────────>└──────────────────────────────┘
+browser ──── static + /api + SSE ───────────>└──────────────────────────────┘
 ```
 
-## Зачем
+## Why
 
-Когда над репозиторием работает несколько агентов, им нужно общее место, где лежит очередь работы.
-Обычный список в файле не годится: двое читают его одновременно и берутся за одну задачу.
-Noted решает ровно это — и ничего сверх:
+When several agents work on one repository they need a shared place to keep the
+queue. A list in a file will not do: two of them read it at once and both start
+the same task. Noted solves that, and a few things that follow from it:
 
-- **Захват задачи атомарен.** Сколько бы агентов ни забирали работу одновременно, каждая задача
-  достаётся ровно одному.
-- **Упавший агент не держит работу.** Задача привязана к сессии, а сессию продлевает транспорт,
-  а не модель: десятиминутная сборка ничему не мешает. Умер процесс — все его задачи
-  освобождаются разом за полторы минуты. Не «видно, что залипло», а «починилось без человека».
-- **Провалы повторяются с паузой.** `max_attempts` возвращает задачу в очередь с нарастающим
-  backoff; когда попытки кончились, она остаётся в `failed` — это и есть dead letter.
-- **Порядок работ соблюдается.** `depends_on` не выдаёт задачу, пока её предшественники не
-  закрыты; провал предшественника переводит ждущих в `blocked`.
-- **Срочное идёт вперёд.** `priority` сортирует очередь, не ломая адресность.
-- **Видно, кто что сделал.** Журнал переходов дописывается на каждое изменение: кто забрал, когда
-  вернули по истечении аренды, сколько было попыток.
-- **Агент — принципал, а не строка.** Ключ доказывает личность, `assignee_id` выводится из ключа,
-  скоуп проектов принудительный. Назваться чужим именем нельзя.
-- **Безопасное поведение по умолчанию.** `set_status` без `if_status` не пишет безусловно:
-  забытый параметр не ломает инварианты молча, а безусловная запись — явный `force`.
-- **Повторный вызов не плодит дубли.** Ретрай с тем же ключом идемпотентности вернёт существующую задачу.
-- **Проекты не мешают друг другу.** Агент, работающий в проекте, не заберёт чужую задачу.
-- **Зациклившийся агент не зальёт очередь.** Предел на создание по автору ловит поломку, не мешая
-  честной декомпозиции.
+- **Claiming is atomic.** However many agents take work at the same moment,
+  every task goes to exactly one of them.
+- **A crashed agent does not hold work.** A task belongs to a session, and the
+  transport renews that session rather than the model, so a ten-minute build is
+  no problem. When the process dies, everything it held is released at once,
+  within ninety seconds. Not "you can see it is stuck" but "it fixed itself".
+- **Failures retry with a pause.** `max_attempts` returns a task to the queue
+  with a growing backoff; when attempts run out it stays `failed` — that is the
+  dead letter.
+- **Order of work is respected.** `depends_on` withholds a task until its
+  predecessors are closed; a failed predecessor turns its waiters `blocked`.
+- **Urgent goes first.** `priority` sorts the queue without breaking addressing.
+- **An agent is a principal, not a string.** A key proves identity, the
+  `assignee_id` follows from the key, and the project scope is enforced. Nobody
+  can take another's name.
+- **Safe behaviour is the default.** `set_status` without `if_status` does not
+  write unconditionally: a forgotten parameter cannot break invariants in
+  silence, and an unconditional write is an explicit `force`.
+- **You can see who did what.** Every change is appended to a journal: who
+  claimed the task, when it came back after a lease expired, how many attempts
+  it took.
+- **A retry breeds no duplicates.** The same idempotency key returns the
+  existing task.
+- **Projects stay out of each other's way.** An agent working in a project will
+  not be handed another project's task.
+- **A looping agent cannot flood the queue.** A per-author creation limit
+  catches the breakage without getting in the way of honest decomposition.
 
-Чего здесь нет намеренно: воркер-пулов, планировщика с окнами, ролей и пользователей, внешнего
-брокера, репликации. Если нужны долговременные workflow с компенсациями или исполнение на
-нескольких машинах — это задача Temporal, и дописывать её сюда не стоит.
+## What it does not do
 
-## Что это не делает
+The core is a primitive: a queue where a task goes to exactly one holder,
+survives that holder's death, and remembers its own history. Acceptance,
+isolation of working copies, launching agents and the shape of a payload are
+assembled on top and stay with whoever writes the orchestration — [RECIPES.md](RECIPES.md)
+shows the primitive is enough for that.
 
-Ядро — примитив: очередь, в которой задача достаётся ровно одному, переживает смерть исполнителя
-и помнит свою историю. Приёмка, изоляция рабочих копий, запуск агентов и формат задания собираются
-поверх и остаются за автором оркестрации — в [RECIPES.md](RECIPES.md) показано, что примитива для
-этого достаточно.
+Identity is the one exception: it cannot be built on top, so it lives in the core.
 
-Единственное исключение — идентичность: её поверх не собрать, поэтому она в ядре.
-
-## Быстрый старт
+## Quick start
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Дэшборд — <http://127.0.0.1:8787/>, документация API — `/docs`, проверка живости — `/healthz`.
+The dashboard is at <http://127.0.0.1:8787/>, the API docs at `/docs`, liveness
+at `/healthz`.
 
-Образ собирается в два этапа: Node собирает фронтенд, Python-образ забирает готовую статику —
-в рантайме Node нет. База лежит в томе `noted-data`, пересборка образа её не трогает.
-Порт публикуется только на петлю.
+The image builds in two stages: Node builds the frontend, the Python image takes
+the finished static files — there is no Node in the runtime. The database lives
+in the `noted-data` volume, so rebuilding the image does not touch it. The port
+is published on the loopback only.
 
-Без compose:
+Without compose:
 
 ```bash
 docker build -f deploy/Dockerfile -t noted .
 docker run -d --name noted -p 127.0.0.1:8787:8787 -v noted-data:/data noted
 ```
 
-## Подключение агента
+## Connecting an agent
 
-MCP-сервер поднят вместе с ядром — ставить и запускать ничего не нужно:
+The MCP server is already up with the core, so nothing has to be installed or
+started:
 
 ```bash
 claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 ```
 
-Тот же адрес, команду и готовый кусок конфига показывает кнопка **Подключить MCP** в шапке
-дэшборда.
+The same address, command and a ready-made config snippet are behind the
+**Connect MCP** button in the dashboard header.
 
-### Ключи агентов
+### Agent keys
 
-Пока не выдан ни один ключ, очередь открытая: ставить и забирать может кто угодно. Первый ключ
-включает проверку личности — обновление ничего не ломает, строгость появляется явным действием.
+Until the first key is issued the queue is open: anyone may post and claim. The
+first key turns identity on — an upgrade breaks nothing, and strictness arrives
+by an explicit act.
 
 ```bash
 venv/bin/noted-keys add agent-builder --projects noted,ui-kit
@@ -96,33 +104,36 @@ venv/bin/noted-keys list
 venv/bin/noted-keys revoke agent-builder
 ```
 
-Ключ показывается один раз, в базе остаётся только его хеш. Дальше он живёт в заголовке:
+A key is shown once; only its hash is stored. From then on it lives in a header:
 
 ```bash
 claude mcp add --transport http noted http://127.0.0.1:8787/mcp/ \
     --header "X-Noted-Token: noted_…"
 ```
 
-С ключом `assignee_id` и `created_by` выводит сервер: назваться чужим именем нельзя. Скоуп
-проектов принудительный — агент не увидит и не заберёт чужую задачу.
+With a key the server fills in `assignee_id` and `created_by` itself: taking
+another's name is not possible. The project scope is enforced — a scoped agent
+neither sees nor claims a foreign task.
 
-Для stdio-транспорта ключ передаётся переменной `NOTED_KEY`:
+For the stdio transport the key comes from `NOTED_KEY`:
 
 ```bash
 claude mcp add noted -- docker run -i --rm \
     -e NOTED_API=http://host.docker.internal:8787 -e NOTED_KEY=noted_… noted noted-mcp
 ```
 
-### Сессии вместо heartbeat
+### Sessions instead of heartbeats
 
-LLM-агент может звать инструменты только между шагами: пока десять минут идёт сборка, он не
-пришлёт ни одного heartbeat. Поэтому признак жизни даёт процесс, а не рассуждение — stdio-адаптер
-продлевает сессию в фоне, на HTTP-транспорте сессией служит `Mcp-Session-Id`.
+An LLM agent can only call tools between steps: while a ten-minute build runs it
+sends no heartbeat at all. So proof of life comes from the process rather than
+from the reasoning — the stdio adapter renews its session in the background, and
+over HTTP the session is the `Mcp-Session-Id` the client already sends.
 
-Внутри сессии задача не берётся в аренду по времени: она держится, пока жив процесс агента.
-Умер — сессия истекает за `NOTED_SESSION_TTL_S` (90 с), и все её задачи возвращаются в очередь.
+Inside a session a task takes no time-based lease: it is held for as long as the
+agent's process lives. When it dies the session expires after `NOTED_SESSION_TTL_S`
+(90 s) and every task it held returns to the queue.
 
-Типовой цикл исполнителя от этого короче:
+That makes the executor loop short:
 
 ```
 claim_task(project="noted", timeout_s=30)
@@ -132,210 +143,226 @@ set_status(task_id=42, status="done", result={"passed": 40})
   → {"ok": true, "outcome": "updated", ...}
 ```
 
-`timeout_s > 0` — long-poll: соединение ждёт появления задачи и возвращается сразу, как только она
-появилась. Опрашивать очередь в цикле не нужно.
+`timeout_s > 0` is a long poll: the connection waits for a task and returns the
+moment one appears. There is no need to poll the queue in a loop.
 
-`set_status` без `if_status` проверяет, что задача всё ещё `in_progress`: забытый параметр не
-ломает инварианты молча. Безусловная запись — явный `force=true`.
+`set_status` without `if_status` checks that the task is still `in_progress`, so
+a forgotten parameter breaks nothing. An unconditional write is `force=true`.
 
-## Инструменты MCP
+## MCP tools
 
-| Инструмент | Назначение |
+| Tool | Purpose |
 |---|---|
-| `set_task(task, project, assignee_id, parent_id, key, created_by, priority, max_attempts, depends_on)` | поставить задачу |
-| `get_tasks(assignee_id, status, project, unscoped, unassigned, parent_id, stale_seconds, before_id, limit)` | список с фильтрами и курсором |
-| `get_task(task_id, with_events)` | одна задача целиком, вместе с `result` и журналом |
-| `set_status(task_id, status, result, if_status, assignee_id, force)` | сменить статус и приложить результат |
-| `claim_task(assignee_id, project, timeout_s, lease_s)` | атомарно забрать задачу в аренду |
-| `heartbeat(task_id, assignee_id, lease_s)` | продлить аренду: «я жив» |
+| `set_task(task, project, assignee_id, parent_id, key, created_by, priority, max_attempts, depends_on)` | post a task |
+| `get_tasks(assignee_id, status, project, unscoped, unassigned, parent_id, stale_seconds, before_id, limit)` | list with filters and a cursor |
+| `get_task(task_id, with_events)` | one task in full, with its result and journal |
+| `set_status(task_id, status, result, if_status, assignee_id, force)` | change status and attach a result |
+| `claim_task(assignee_id, project, timeout_s, lease_s)` | take a task atomically |
+| `heartbeat(task_id, assignee_id, lease_s)` | extend the lease: "I am alive" |
 
-Каждый ответ приходит в одном конверте с полем `outcome` — по нему агент решает, что делать дальше:
+Every answer arrives in one envelope with an `outcome` field, and an agent
+decides what to do next by it:
 
-| `outcome` | `ok` | HTTP | Когда |
+| `outcome` | `ok` | HTTP | When |
 |---|---|---|---|
-| `created` · `exists` | true | 201 · 200 | задача создана · сработала идемпотентность по `key` |
-| `ok` · `updated` · `claimed` | true | 200 | чтение · статус сменён · задача забрана |
-| `empty` | true | 200 | брать нечего, long-poll истёк — это не ошибка |
-| `not_found` · `parent_not_found` | false | 404 | нет такой задачи · нет такого родителя |
-| `status_conflict` | false | 409 | `if_status` не совпал либо задача не в том состоянии |
-| `not_owner` | false | 409 | задача в работе у другого исполнителя |
-| `rate_limited` | false | 429 | автор ставит задачи быстрее предела |
-| `validation_error` | false | 422 | кривой вход |
-| `unauthorized` | false | 401 | задан `NOTED_TOKEN`, заголовок не совпал |
-| `api_unavailable` | false | — | ядро не отвечает; отдаёт адаптер |
+| `created` · `exists` | true | 201 · 200 | the task was created · the idempotency key matched |
+| `ok` · `updated` · `claimed` | true | 200 | a read · status changed · task taken |
+| `empty` | true | 200 | nothing to take, the long poll ran out — not an error |
+| `not_found` · `parent_not_found` | false | 404 | no such task · no such parent |
+| `status_conflict` | false | 409 | `if_status` did not match, or the task is in another state |
+| `not_owner` | false | 409 | the task is held by another executor |
+| `stale_session` | false | 409 | another instance of the same agent holds it |
+| `forbidden` | false | 403 | the project is outside the key's scope |
+| `validation_error` | false | 422 | malformed input |
+| `unauthorized` | false | 401 | `NOTED_TOKEN` is set and the header did not match |
+| `rate_limited` | false | 429 | the author posts faster than the limit |
+| `api_unavailable` | false | — | the core is not answering; returned by the adapter |
 
-`not_found`, `status_conflict` и `empty` — штатные исходы: агент обязан их обработать, а не падать.
-Ошибки входа, отказ по токену и недоступность ядра дополнительно помечаются как ошибка инструмента.
+`not_found`, `status_conflict` and `empty` are normal outcomes: an agent has to
+handle them rather than crash. Malformed input, a refused key and an unreachable
+core are additionally marked as tool errors.
 
-## Модель
+## Model
 
-**Задача** — произвольный JSON-объект плюс метаданные: статус, проект, исполнитель, автор,
-родитель, ключ идемпотентности, результат, времена создания и обновления.
+**A task** is an arbitrary JSON object plus metadata: status, project, assignee,
+author, parent, idempotency key, result, and the times it was created and last
+touched.
 
-**Статусы** — фиксированный набор: `pending` · `in_progress` · `blocked` · `done` · `failed` ·
-`cancelled`. Машины состояний нет; контроль переходов даёт `if_status`.
+**Statuses** are a fixed set: `pending` · `in_progress` · `blocked` · `done` ·
+`failed` · `cancelled`. There is no state machine; `if_status` is what controls
+transitions.
 
-**Проекты** — произвольная строка, `null` означает «вне проектов». Скоуп строгий: агент,
-назвавший проект в `claim_task`, не заберёт ни чужую задачу, ни задачу без проекта. Отдельной
-таблицы проектов нет — список выводится из самих задач.
+**Projects** are an arbitrary string, `null` meaning "outside every project".
+The scope is strict: an agent naming a project in `claim_task` gets neither
+another project's task nor one with no project. Name none and it takes from
+anywhere. There is no project table — the list is derived from the tasks.
 
-**Порядок выдачи** — контракт: `priority` убывая → адресованные раньше пула → FIFO по `id`.
-Не выдаются задачи с неистёкшей паузой после провала, с незакрытыми зависимостями и чужих проектов.
-Голодание возможно и это осознанный выбор: поток высокоприоритетных задач отодвигает низкий
-сколь угодно долго, старения приоритета в ядре нет.
+**Dispatch order** is a contract: `priority` descending → addressed before the
+pool → FIFO by `id`. Tasks still inside a post-failure pause, tasks with open
+dependencies and tasks of other projects are never handed out. Starvation is
+possible and deliberate: a stream of high-priority work can hold off the
+low-priority indefinitely, and there is no priority ageing in the core.
 
-**Аренда** — захват берёт задачу на `lease_s` секунд. Продлевается `heartbeat`-ом, по истечении
-задача возвращается в общий пул (или уходит в `failed`, если попытки исчерпаны). `lease_s=0` —
-без аренды.
+**A lease** is taken on claim. It is renewed by `heartbeat`, and on expiry the
+task returns to the shared pool (or goes to `failed` when attempts are gone).
+`lease_s=0` takes none. Inside a session no lease is set at all.
 
-**Повторы** — `max_attempts` превращает провал в возврат в очередь с экспоненциальной паузой.
-Исчерпание попыток оставляет задачу в `failed`.
+**Retries**: `max_attempts` turns a failure into a return to the queue with an
+exponential pause. Exhausted attempts leave the task `failed`.
 
-**Зависимости** — `depends_on` держит задачу невыдаваемой, пока предшественники не `done`.
-Провал предшественника переводит ждущих в `blocked`, успех — разблокирует.
+**Dependencies**: `depends_on` keeps a task unclaimable until its predecessors
+are `done`. A failed predecessor turns its waiters `blocked`; a successful one
+unblocks them.
 
-**Журнал** — каждое изменение дописывается в отдельную таблицу: `created`, `claimed`, `status`,
-`retry`, `reaped`, `dead_letter`, `blocked`, `unblocked`. Записи закрытых задач старше
-`NOTED_JOURNAL_KEEP_DAYS` удаляются; у живых задач журнал не трогается.
+**The journal** appends an entry on every change: `created`, `claimed`,
+`status`, `retry`, `reaped`, `dead_letter`, `blocked`, `unblocked`. Entries of
+closed tasks older than `NOTED_JOURNAL_KEEP_DAYS` are dropped; the journal of a
+live task is never touched.
 
-**Поток событий** — `GET /events` отдаёт эти же записи как SSE и служит публичным контрактом:
-у каждого события есть номер, и клиент после обрыва продолжает с него (`Last-Event-ID` или
-`?after=`), не теряя пропущенного. На этом строятся интеграции вместо опроса.
-
-**Compare-and-set** — `if_status` в `set_status` превращает вызов в условную запись: она пройдёт,
-только если задача всё ещё в ожидаемом статусе. Так двое не доделывают одну задачу.
+**The event stream**: `GET /events` serves those same entries over SSE and acts
+as a public contract — every event carries a number, and a client that
+reconnects continues from it (`Last-Event-ID` or `?after=`) without losing what
+it missed. Integrations are built on that rather than on polling.
 
 ## HTTP API
 
-| Метод | Путь | Смысл |
+| Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/tasks` | создать задачу |
-| `GET` | `/api/tasks` | список с фильтрами |
-| `GET` | `/api/tasks/{id}` | одна задача целиком |
-| `PATCH` | `/api/tasks/{id}/status` | сменить статус |
-| `POST` | `/api/tasks/claim` | атомарно забрать задачу, с long-poll и арендой |
-| `POST` | `/api/tasks/{id}/heartbeat` | продлить аренду |
-| `POST` | `/api/sessions/renew` | продление сессии транспортом |
-| `POST` | `/api/login` · `/api/logout` | вход в дэшборд |
-| `GET` | `/api/tasks/{id}/events` | журнал переходов задачи |
-| `GET` | `/api/stats` | счётчики по статусам, списки проектов и исполнителей |
-| `GET` | `/events` | SSE-поток изменений для дэшборда |
-| `POST`/`GET` | `/mcp/` | MCP, транспорт streamable-http |
-| `GET` | `/healthz` | живость |
+| `POST` | `/api/tasks` | create a task |
+| `GET` | `/api/tasks` | list with filters |
+| `GET` | `/api/tasks/{id}` | one task in full |
+| `PATCH` | `/api/tasks/{id}/status` | change status |
+| `POST` | `/api/tasks/claim` | take a task atomically, with long poll and lease |
+| `POST` | `/api/tasks/{id}/heartbeat` | extend the lease |
+| `GET` | `/api/tasks/{id}/events` | the transition journal of a task |
+| `GET` | `/api/stats` | counters, plus the project and assignee lists |
+| `GET` | `/events` | the SSE stream of changes |
+| `POST` | `/api/sessions/renew` | session renewal by the transport |
+| `POST` | `/api/login` · `/api/logout` | the dashboard door |
+| `POST`/`GET` | `/mcp/` | MCP over the streamable-http transport |
+| `GET` | `/healthz` | liveness |
 
-Интерактивная схема — на `/docs`.
+The interactive schema is at `/docs`.
 
-## Дэшборд
+## Dashboard
 
-React + TypeScript на [astralyx-ui](https://ui.astralyx.dev), собирается Vite и отдаётся ядром
-с корня. Работает поверх того же `/api`, что и агенты.
+React and TypeScript on [astralyx-ui](https://ui.astralyx.dev), built by Vite and
+served by the core from the root. It runs on the same `/api` the agents use.
 
-- Таблица задач со статусами, проектами, исполнителями и меню действий в строке; длинные списки
-  подгружаются порциями по мере скролла.
-- Фильтры по статусу, проекту, исполнителю и «не обновлялась дольше N»; состояние живёт
-  в query-строке, поэтому ссылкой на отфильтрованный вид можно поделиться.
-- Счётчики считаются внутри выбранного проекта, а не по всей базе.
-- Постановка задачи в модальном окне, включая JSON-нагрузку.
-- Карточка задачи с `task`, `result` и подзадачами; открытая карточка пишется в URL.
-- Живое обновление через `EventSource`: сервер сам сообщает об изменениях, опроса по таймеру нет.
-- В строке видно истёкшую аренду, ожидание зависимостей, номер попытки и приоритет; в карточке —
-  журнал переходов целиком.
-- Кнопка «Подключить MCP» с адресом, командой и конфигом — копируются в один клик.
+- A table of tasks with statuses, projects, assignees and a per-row action menu;
+  long lists load in pages as you scroll.
+- Filters by status, project, assignee and "not updated for N"; the state lives
+  in the query string, so a filtered view can be shared as a link.
+- Counters are computed inside the selected project, not over the whole database.
+- Creating a task in a modal, including a JSON payload.
+- A task card with `task`, `result`, dependencies, subtasks and the journal; an
+  open card is written into the URL.
+- Live updates over `EventSource`: the server announces changes, nothing polls.
+- An expired lease, waiting dependencies, the attempt number and a non-zero
+  priority are all visible in the row; the card carries the whole journal.
+- A **Connect MCP** button with the address, the command and a config snippet,
+  each copied in one click.
 
-## Конфигурация
+## Configuration
 
-Все переменные перечислены в [`.env.example`](.env.example) с пояснениями — скопируйте его в
-`.env` и правьте что нужно. Экспортированная переменная всегда важнее файла, поэтому
-`docker run -e` и `export` перебивают `.env`.
+Every variable is listed with an explanation in [`.env.example`](.env.example) —
+copy it to `.env` and edit what you need. An exported variable always wins over
+the file, so `docker run -e` and `export` override `.env`.
 
-| Переменная | По умолчанию | Смысл |
+| Variable | Default | Purpose |
 |---|---|---|
-| `NOTED_DB` | `~/.noted/tasks.db`, в образе `/data/tasks.db` | файл базы |
-| `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, в образе `0.0.0.0` | адрес ядра |
-| `NOTED_UI_DIR` | `dashboard/dist` | каталог собранного дэшборда |
-| `NOTED_API` | `http://127.0.0.1:8787` | куда ходит MCP-адаптер |
-| `NOTED_TOKEN` | пусто | если задан — `/api` и `/mcp` требуют заголовок `X-Noted-Token` |
-| `NOTED_LEASE_S` | `300` | срок аренды, если агент не назвал свой |
-| `NOTED_REAP_INTERVAL_S` | `15` | как часто собирать просроченные аренды |
-| `NOTED_RETRY_BASE_S` / `NOTED_RETRY_CAP_S` | `5` / `300` | первая пауза перед повтором и её потолок |
-| `NOTED_CREATE_LIMIT` / `NOTED_CREATE_WINDOW_S` | `300` / `60` | предел создания задач одним автором; `0` выключает |
-| `NOTED_SESSION_TTL_S` | `90` | сколько сессия живёт без продления |
-| `NOTED_JOURNAL_KEEP_DAYS` | `30` | хранение журнала закрытых задач; `0` — вечно |
-| `NOTED_KEY` | пусто | ключ агента для stdio-адаптера |
+| `NOTED_DB` | `~/.noted/tasks.db`, `/data/tasks.db` in the image | the database file |
+| `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
+| `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
+| `NOTED_API` | `http://127.0.0.1:8787` | where the stdio adapter looks for the core |
+| `NOTED_TOKEN` | empty | when set, `/api` and `/mcp` require `X-Noted-Token` |
+| `NOTED_KEY` | empty | the agent key for the stdio adapter |
+| `NOTED_LEASE_S` | `300` | lease length when the agent asks for none |
+| `NOTED_SESSION_TTL_S` | `90` | how long a session survives without renewal |
+| `NOTED_REAP_INTERVAL_S` | `15` | how often expired leases are collected |
+| `NOTED_RETRY_BASE_S` / `NOTED_RETRY_CAP_S` | `5` / `300` | first retry pause and its ceiling |
+| `NOTED_CREATE_LIMIT` / `NOTED_CREATE_WINDOW_S` | `300` / `60` | per-author creation limit; `0` disables |
+| `NOTED_JOURNAL_KEEP_DAYS` | `30` | journal retention for closed tasks; `0` keeps everything |
 
-## Эксплуатация
+## Operating it
 
-**Один процесс — обязательное условие, а не рекомендация.** Писатель у базы ровно один; несколько
-воркеров uvicorn означают несколько писателей и возвращают ровно ту межпроцессную гонку, ради
-устранения которой ядро и вынесено в сервис. `workers=1` зашит в код, переопределять его не нужно.
+**A single process is a requirement, not a preference.** There is exactly one
+writer; several uvicorn workers would mean several writers and bring back the
+cross-process race this service exists to remove. `workers=1` is baked into the
+code and needs no overriding.
 
-**Сеть.** Внутри контейнера процесс слушает `0.0.0.0`, наружу публикуется только `127.0.0.1:8787`.
-Если ядро всё же должно быть доступно извне, задайте `NOTED_TOKEN` — тогда `/api` и `/mcp`
-потребуют заголовок `X-Noted-Token`. Дэшборд рассчитан на локальный доступ и прав не разделяет.
+**Network.** Inside the container the process listens on `0.0.0.0`, and only
+`127.0.0.1:8787` is published. If the core really has to be reachable from
+elsewhere, hand out per-agent keys rather than a shared token.
 
-**Данные.** База — один файл SQLite в режиме WAL, лежит в томе. Бэкап — копия каталога при
-остановленном контейнере либо `sqlite3 tasks.db ".backup out.db"` на живом. Колонки, добавленные
-в новых версиях схемы, досыпаются при открытии базы: старая база не ломается и ручной миграции
-не требует.
+**Access.** Agents arrive with a key in a header; the dashboard has its own
+door — with `NOTED_TOKEN` set the browser asks for it once and keeps a pass in a
+cookie. There are no roles inside the dashboard: whoever signs in is an admin.
 
-**Наблюдение.** `HEALTHCHECK` дёргает `/healthz`, поэтому `docker ps` показывает не только
-«запущен», но и «отвечает». Брошенные задачи система разбирает сама по истечении аренды, а фильтр
-`stale_seconds` и журнал переходов остаются, чтобы понять, что именно произошло.
+**Data.** The database is one SQLite file in WAL mode, living in a volume. Back
+it up by copying the directory with the container stopped, or with
+`sqlite3 tasks.db ".backup out.db"` while it runs. Columns added in newer
+versions are filled in when the database is opened: an older file neither breaks
+nor needs a manual migration.
 
-**Предохранитель.** Очередь открытая, поэтому на создание стоит предел по автору
-(`NOTED_CREATE_LIMIT` за `NOTED_CREATE_WINDOW_S`). Он ловит зациклившегося агента, а не делит
-очередь по справедливости: квот здесь нет.
+**A guard rail.** The queue is open, so creation is capped per author
+(`NOTED_CREATE_LIMIT` per `NOTED_CREATE_WINDOW_S`). It catches a looping agent
+rather than dividing the queue fairly — there are no quotas here.
 
-**Доступ.** Агенты приходят с ключом в заголовке, дэшборд — со своим входом: если задан
-`NOTED_TOKEN`, браузер спрашивает его один раз и хранит пропуск в куке. Ролей внутри дэшборда нет —
-кто вошёл, тот администратор.
+**Watching it.** `HEALTHCHECK` polls `/healthz`, so `docker ps` shows not only
+"running" but "answering". Abandoned tasks are collected by the service itself
+once a lease expires; the `stale_seconds` filter and the journal remain for
+understanding what happened.
 
-**Граница применимости.** Ядро — один процесс: упало — встал рой. Репликации и переключения нет,
-это плата за отсутствие брокера. Агенты на других хостах требуют открыть порт наружу — тогда
-обязательно выдавайте им отдельные ключи, а не общий токен.
+**Where it stops.** The core is one process: if it falls, the swarm stops. There
+is no replication and no failover — that is the price of having no broker.
 
-## Разработка
+## Development
 
-Ядро:
+The core:
 
 ```bash
 python3 -m venv venv && venv/bin/pip install -e ".[dev]"
-venv/bin/noted-api            # ядро локально, без контейнера
+venv/bin/noted-api            # the core locally, without a container
 venv/bin/python -m pytest
 ```
 
-Дэшборд:
+The dashboard (`dashboard/`) — React and TypeScript on astralyx-ui, built by Vite:
 
 ```bash
-cd dashboard && npm install
-npm run dev                   # 5173, /api и /events проксируются в ядро
-npm run build                 # собирает dist/, который отдаёт ядро
+cd dashboard
+npm install
+npm run dev                   # 5173, with /api and /events proxied to the core
+npm run build                 # builds dist/, which the core serves
 ```
 
-Компоненты astralyx-ui скопированы в `dashboard/src/components/ui`, а не подключены зависимостью —
-код в репозитории и принадлежит проекту. Новый компонент: `npx astralyx-ui add <имя>`.
+Kit components live in `dashboard/src/components/ui` — they are copied into the
+repository rather than pulled in as a dependency. To add one:
+`npx astralyx-ui add <name>`.
 
-### Устройство кода
+### How the code is laid out
 
-Ядро разложено по слоям и доменам: `routes/` — только HTTP, `services/` — вся логика вместе с SQL,
-`models/` — схемы и соединение с базой, `utils/` — сквозное. Сервисы не импортируют FastAPI,
-поэтому их тесты не поднимают приложение, а роуты и MCP-адаптер зовут один и тот же код.
+The core is split by layer and by domain: `routes/` is HTTP only, `services/`
+holds all the logic together with the SQL, `models/` the schemas and the database
+connection, `utils/` the cross-cutting parts. Services never import FastAPI, so
+their tests start no application while the routes, MCP and the adapter all call
+the same code.
 
 ```
-api/          models/ · routes/ (JSON, SSE, MCP) · services/ · utils/
-mcp_adapter/  stdio-транспорт для клиентов без HTTP, без доступа к базе
-dashboard/    React + astralyx-ui, собирается в dist/
-deploy/       Dockerfile (два этапа) и docker-compose.yml
+api/          settings.py · models/ · routes/ (JSON, SSE, MCP) · services/ · utils/
+mcp_adapter/  the stdio transport for clients without HTTP, no database access
+dashboard/    React on astralyx-ui, built into dist/
+deploy/       Dockerfile (two stages) and docker-compose.yml
 tests/        services · routes · mcp
 ```
 
-Требования: Python ≥ 3.11, Node ≥ 20 (только для сборки дэшборда).
+Requirements: Python ≥ 3.11, Node ≥ 20 (only to build the dashboard).
 
-## Документация
+## Documentation
 
-- [RECIPES.md](RECIPES.md) — рецепты: приёмка задачей-верификатором, ветка и worktree в задании,
-  супервизор агентов, интеграции на событиях.
-- [SPEC.md](SPEC.md) — контракт: модель, статусы и переходы, исходы, порядок выдачи, идентичность,
-  формат потока событий.
-- [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) — устройство, решения и их причины,
-  чеклист приёмки, таблица рисков.
+- [RECIPES.md](RECIPES.md) — acceptance through a verifier task, a branch or
+  worktree in the payload, a supervisor for agents, integrations on events.
+- [SPEC.md](SPEC.md) — the contract: model, statuses and transitions, outcomes,
+  dispatch order, identity, the event format.
+- [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) — how it is built and
+  why, an acceptance checklist and a table of risks.

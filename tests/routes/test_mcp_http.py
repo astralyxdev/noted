@@ -22,7 +22,7 @@ async def test_tools_are_published(live_server):
 async def test_full_cycle_over_http(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
         created = (
-            await mcp.call_tool("set_task", {"task": {"title": "через http"}, "project": "noted"})
+            await mcp.call_tool("set_task", {"task": {"title": "over http"}, "project": "noted"})
         ).structured_content
         assert created["outcome"] == "created"
         task_id = created["task"]["id"]
@@ -60,7 +60,7 @@ async def test_full_cycle_over_http(live_server):
 
 async def test_bad_input_is_reported_as_tool_error(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
-        result = await mcp.call_tool("set_status", {"task_id": 1, "status": "почти_done"})
+        result = await mcp.call_tool("set_status", {"task_id": 1, "status": "almost_done"})
     assert result.is_error, "bad input must arrive as a tool error"
 
 
@@ -74,7 +74,7 @@ async def test_missing_task_is_a_normal_answer(live_server):
 
 async def test_lease_and_heartbeat_over_http(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
-        created = (await mcp.call_tool("set_task", {"task": {"title": "долгая"}})).structured_content
+        created = (await mcp.call_tool("set_task", {"task": {"title": "long"}})).structured_content
         task_id = created["task"]["id"]
 
         claimed = (
@@ -96,7 +96,7 @@ async def test_lease_and_heartbeat_over_http(live_server):
 
 async def test_journal_is_available_to_the_agent(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
-        created = (await mcp.call_tool("set_task", {"task": {"title": "с журналом"}})).structured_content
+        created = (await mcp.call_tool("set_task", {"task": {"title": "with a journal"}})).structured_content
         task_id = created["task"]["id"]
         await mcp.call_tool("claim_task", {"assignee_id": "agent-1"})
 

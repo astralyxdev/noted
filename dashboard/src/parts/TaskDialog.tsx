@@ -72,7 +72,7 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
         {!task && !error && (
           <DialogBody>
             <div className="text-muted-foreground flex items-center gap-2 py-6 text-sm">
-              <Spinner size="sm" /> Загружаю задачу…
+              <Spinner size="sm" /> Loading the task…
             </div>
           </DialogBody>
         )}
@@ -84,14 +84,14 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
                 <Badge color={STATUS_COLOR[task.status]} size="sm">
                   {task.status}
                 </Badge>
-                <span className="text-muted-foreground font-mono text-xs">задача #{task.id}</span>
+                <span className="text-muted-foreground font-mono text-xs">task #{task.id}</span>
                 {task.parent_id && (
                   <button
                     type="button"
                     className="text-muted-foreground hover:text-foreground font-mono text-xs"
                     onClick={() => onOpen(task.parent_id as number)}
                   >
-                    из #{task.parent_id}
+                    from #{task.parent_id}
                   </button>
                 )}
               </div>
@@ -100,33 +100,33 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
 
             <DialogBody className="flex flex-col gap-5">
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-                <Fact label="проект" value={task.project ?? '—'} />
-                <Fact label="исполнитель" value={task.assignee_id ?? 'общий пул'} />
-                <Fact label="поставил" value={task.created_by ?? '—'} />
+                <Fact label="project" value={task.project ?? '—'} />
+                <Fact label="assignee" value={task.assignee_id ?? 'shared pool'} />
+                <Fact label="created by" value={task.created_by ?? '—'} />
                 <Fact
-                  label="попытки"
-                  value={task.max_attempts ? `${task.attempts} из ${task.max_attempts}` : String(task.attempts)}
+                  label="attempts"
+                  value={task.max_attempts ? `${task.attempts} of ${task.max_attempts}` : String(task.attempts)}
                 />
-                {task.priority !== 0 && <Fact label="приоритет" value={String(task.priority)} />}
-                {leaseLeft(task) && <Fact label="аренда" value={`осталось ${leaseLeft(task)}`} />}
-                {task.retry_after && <Fact label="повтор после" value={at(task.retry_after)} />}
-                <Fact label="создана" value={at(task.created_at)} />
-                <Fact label="обновлена" value={at(task.updated_at)} />
-                {task.key && <Fact label="ключ" value={task.key} />}
+                {task.priority !== 0 && <Fact label="priority" value={String(task.priority)} />}
+                {leaseLeft(task) && <Fact label="lease" value={`${leaseLeft(task)} left`} />}
+                {task.retry_after && <Fact label="retry after" value={at(task.retry_after)} />}
+                <Fact label="created" value={at(task.created_at)} />
+                <Fact label="updated" value={at(task.updated_at)} />
+                {task.key && <Fact label="key" value={task.key} />}
               </dl>
 
               <section className="flex flex-col gap-2">
-                <h3 className="text-muted-foreground font-mono text-xs uppercase">задание</h3>
+                <h3 className="text-muted-foreground font-mono text-xs uppercase">payload</h3>
                 <pre className="bg-muted overflow-x-auto rounded-lg p-3 font-mono text-xs">
                   {pretty(task.task)}
                 </pre>
               </section>
 
               <section className="flex flex-col gap-2">
-                <h3 className="text-muted-foreground font-mono text-xs uppercase">результат</h3>
+                <h3 className="text-muted-foreground font-mono text-xs uppercase">result</h3>
                 {task.result === null ? (
                   <p className="text-muted-foreground text-sm">
-                    Исполнитель ещё не отчитался — он пишет сюда через <code>set_status</code>.
+                    The executor has not reported yet; it writes here through <code>set_status</code>.
                   </p>
                 ) : (
                   <pre className="bg-muted overflow-x-auto rounded-lg p-3 font-mono text-xs">
@@ -138,7 +138,7 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
               {task.depends_on.length > 0 && (
                 <section className="flex flex-col gap-2">
                   <h3 className="text-muted-foreground font-mono text-xs uppercase">
-                    ждёт задач · {task.depends_on.length}
+                    waiting on · {task.depends_on.length}
                   </h3>
                   <ul className="flex flex-wrap gap-2">
                     {task.depends_on.map((dep) => (
@@ -159,7 +159,7 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
               {children.length > 0 && (
                 <section className="flex flex-col gap-2">
                   <h3 className="text-muted-foreground font-mono text-xs uppercase">
-                    подзадачи · {children.length}
+                    subtasks · {children.length}
                   </h3>
                   <ul className="flex flex-col">
                     {children.map((child) => (
@@ -183,7 +183,7 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
               {log.length > 0 && (
                 <section className="flex flex-col gap-2">
                   <h3 className="text-muted-foreground font-mono text-xs uppercase">
-                    журнал · {log.length}
+                    journal · {log.length}
                   </h3>
                   <ol className="flex flex-col gap-1.5">
                     {log.map((entry) => (
@@ -211,13 +211,13 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
               <div className="flex flex-wrap items-center gap-2">
                 <Select
                   className="w-44"
-                  triggerLabel="Новый статус"
+                  triggerLabel="New status"
                   value={task.status}
                   onValueChange={(status) => onStatus(task.id, status as Status)}
                   options={STATUSES.map((status) => ({ value: status, label: status }))}
                 />
                 <Button variant="outline" onClick={onClose}>
-                  Закрыть
+                  Close
                 </Button>
               </div>
             </DialogBody>

@@ -13,21 +13,21 @@ from api.services.tasks import TaskError
 
 
 def test_create_returns_pending_task():
-    task, created = service.create({"title": "собрать отчёт"}, created_by="orchestrator")
+    task, created = service.create({"title": "build the report"}, created_by="orchestrator")
     assert created is True
     assert task.status.value == "pending"
-    assert task.task == {"title": "собрать отчёт"}
+    assert task.task == {"title": "build the report"}
     assert task.created_by == "orchestrator"
 
 
 def test_key_makes_create_idempotent():
-    first, created_first = service.create({"title": "раз"}, key="job-1")
-    second, created_second = service.create({"title": "другой текст"}, key="job-1")
+    first, created_first = service.create({"title": "first"}, key="job-1")
+    second, created_second = service.create({"title": "different text"}, key="job-1")
 
     assert created_first is True
     assert created_second is False
     assert second.id == first.id
-    assert second.task == {"title": "раз"}, "the existing task is not overwritten"
+    assert second.task == {"title": "first"}, "the existing task is not overwritten"
     assert len(service.list_tasks()) == 1
 
 
@@ -68,9 +68,9 @@ def test_set_status_reports_missing_task():
 
 def test_result_is_kept_when_status_changes_without_it():
     task, _ = service.create({"n": 1})
-    service.set_status(task.id, "failed", result={"error": "таймаут"}, force=True)
+    service.set_status(task.id, "failed", result={"error": "timeout"}, force=True)
     service.set_status(task.id, "pending", force=True)
-    assert service.get(task.id).result == {"error": "таймаут"}
+    assert service.get(task.id).result == {"error": "timeout"}
 
 
 def test_list_filters():
@@ -112,11 +112,11 @@ def test_parent_must_exist():
 
 def test_bad_input_is_rejected():
     with pytest.raises(TaskError):
-        service.create("не объект")
+        service.create("not an object")
     with pytest.raises(TaskError):
         service.create({"n": 1}, assignee_id="   ")
     with pytest.raises(TaskError):
-        service.set_status(1, "почти_done")
+        service.set_status(1, "almost_done")
 
 
 def test_concurrent_claims_never_hand_out_the_same_task():
@@ -191,7 +191,7 @@ def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
             parent_id INTEGER, key TEXT UNIQUE, result TEXT,
             created_at REAL NOT NULL, updated_at REAL NOT NULL);
         INSERT INTO tasks (task, status, created_at, updated_at)
-        VALUES ('{"title": "старая"}', 'pending', 1, 1);
+        VALUES ('{"title": "old one"}', 'pending', 1, 1);
         """
     )
     legacy.commit()
@@ -201,10 +201,10 @@ def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
     database.close()
 
     existing = service.list_tasks()
-    assert existing[0].task == {"title": "старая"}
+    assert existing[0].task == {"title": "old one"}
     assert existing[0].project is None
 
-    fresh, _ = service.create({"title": "новая"}, project="noted")
+    fresh, _ = service.create({"title": "new one"}, project="noted")
     assert fresh.project == "noted"
 
 

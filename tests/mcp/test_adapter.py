@@ -10,11 +10,11 @@ from tests.conftest import free_port
 
 
 async def test_full_cycle_through_tools(live_server):
-    created = await set_task({"title": "прогнать тесты"}, created_by="orchestrator", key="job-1")
+    created = await set_task({"title": "run the tests"}, created_by="orchestrator", key="job-1")
     assert created["outcome"] == "created"
     task_id = created["task"]["id"]
 
-    again = await set_task({"title": "прогнать тесты"}, key="job-1")
+    again = await set_task({"title": "run the tests"}, key="job-1")
     assert again["outcome"] == "exists"
     assert again["task"]["id"] == task_id
 
@@ -41,7 +41,7 @@ async def test_full_cycle_through_tools(live_server):
 
 async def test_validation_error_is_raised_as_tool_error(live_server):
     with pytest.raises(ToolError) as err:
-        await set_status(1, "почти_done")
+        await set_status(1, "almost_done")
     assert "validation_error" in str(err.value)
 
 

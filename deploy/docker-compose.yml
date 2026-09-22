@@ -6,13 +6,13 @@ services:
     image: noted:latest
     container_name: noted
     restart: unless-stopped
-    # Порт публикуется только на петлю: дэшборд и API не уезжают в сеть
+    # Published on the loopback only: the dashboard and API stay off the network
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
       - noted-data:/data
     environment:
-      # Задайте, если ядро всё же торчит наружу: тогда /api потребует заголовок
+      # Set this if the core is exposed: then /api and /mcp require the header
       NOTED_TOKEN: ${NOTED_TOKEN:-}
 
 volumes:

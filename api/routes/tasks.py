@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api", tags=["tasks"])
 async def create_task(request: CreateTaskRequest, http: Request):
     who = principal_of(http)
     if who.agent and not who.agent.may_touch(request.project):
-        return respond(envelope(Outcome.forbidden, f"проект {request.project} вне скоупа ключа", task=None))
+        return respond(envelope(Outcome.forbidden, f"project {request.project} is outside the key's scope", task=None))
     task, created = await run_service(
         tasks_service.create,
         task=request.task,
@@ -104,7 +104,7 @@ async def list_tasks(
 async def get_task(task_id: int):
     task = await run_service(tasks_service.get, task_id)
     if task is None:
-        return respond(envelope(Outcome.not_found, f"задачи {task_id} не существует", task=None))
+        return respond(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
     return respond(envelope(Outcome.ok, task=task))
 
 
@@ -126,14 +126,14 @@ async def set_task_status(task_id: int, request: SetStatusRequest, http: Request
         await (events.notify_new_task() if request.status is Status.pending else events.notify_change())
 
     message = {
-        Outcome.not_found: f"задачи {task_id} не существует",
+        Outcome.not_found: f"task {task_id} does not exist",
         Outcome.status_conflict: (
-            f"ожидался статус {request.if_status.value if request.if_status else 'in_progress'}, "
-            f"а задача в {task.status.value if task else ''}; "
-            "безусловная запись — это force=true"
+            f"expected status {request.if_status.value if request.if_status else 'in_progress'}, "
+            f"but the task is {task.status.value if task else ''}; "
+            "an unconditional write is force=true"
         ),
-        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
-        Outcome.stale_session: "задачу держит другой экземпляр этого агента",
+        Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
+        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return respond(envelope(outcome, message, task=task))
 
@@ -150,10 +150,10 @@ async def heartbeat(task_id: int, request: HeartbeatRequest, http: Request):
         session_id=who.session_id,
     )
     message = {
-        Outcome.not_found: f"задачи {task_id} не существует",
-        Outcome.status_conflict: f"задача не в работе, а в {task.status.value if task else ''}",
-        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
-        Outcome.stale_session: "задачу держит другой экземпляр этого агента",
+        Outcome.not_found: f"task {task_id} does not exist",
+        Outcome.status_conflict: f"the task is not in progress but {task.status.value if task else ''}",
+        Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
+        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return respond(envelope(outcome, message, task=task))
 
@@ -163,7 +163,7 @@ async def get_task_events(task_id: int, limit: int = 200):
     """The transition journal of a task: who did what to it, and when."""
     task = await run_service(tasks_service.get, task_id)
     if task is None:
-        return respond(envelope(Outcome.not_found, f"задачи {task_id} не существует", task=None))
+        return respond(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
     log = await run_service(tasks_service.events, task_id, limit)
     return respond(envelope(Outcome.ok, task=task, events=log, count=len(log)))
 
@@ -173,10 +173,10 @@ async def login(request: LoginRequest, http: Request):
     """The dashboard door. A browser sends no headers, so it gets a cookie."""
     expected = authorization.admin_token()
     if not expected:
-        return respond(envelope(Outcome.ok, "токен не задан — вход не требуется"))
+        return respond(envelope(Outcome.ok, "no token is set, so no login is needed"))
     # Compared as bytes: compare_digest refuses non-ASCII strings.
     if not hmac.compare_digest(request.token.strip().encode(), expected.encode()):
-        return respond(envelope(Outcome.unauthorized, "неверный токен"))
+        return respond(envelope(Outcome.unauthorized, "wrong token"))
 
     response = respond(envelope(Outcome.ok))
     response.set_cookie(
@@ -207,7 +207,7 @@ async def renew_session(http: Request):
     """
     who = principal_of(http)
     if not who.session_id:
-        return respond(envelope(Outcome.validation_error, f"нужен заголовок с идентификатором сессии"))
+        return respond(envelope(Outcome.validation_error, "a session id header is required"))
     await run_service(agents_service.renew_session, who.session_id)
     return respond(envelope(Outcome.ok))
 
