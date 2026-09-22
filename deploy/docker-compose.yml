@@ -1,0 +1,19 @@
+services:
+  noted:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: noted:latest
+    container_name: noted
+    restart: unless-stopped
+    # Порт публикуется только на петлю: дэшборд и API не уезжают в сеть
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - noted-data:/data
+    environment:
+      # Задайте, если ядро всё же торчит наружу: тогда /api потребует заголовок
+      NOTED_TOKEN: ${NOTED_TOKEN:-}
+
+volumes:
+  noted-data:

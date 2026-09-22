@@ -1,0 +1,52 @@
+@import './styles/astralyx.css';
+
+/*
+ * Моргание логотипа Astralyx. Перенесено из ui-kit: два быстрых моргания,
+ * затем длинное, в котором левый глаз прикрывается лишь на 22% — подмигивание
+ * есть в оригинальной анимации, это не случайность.
+ *
+ * `transform-box: view-box` разрешает transform-origin в единицах viewBox,
+ * поэтому каждое веко поворачивается на своей петле, а не вокруг угла SVG.
+ */
+.ax-eyelid-l,
+.ax-eyelid-r {
+  transform-box: view-box;
+}
+
+.ax-eyelid-r {
+  transform-origin: 25.52px 31.14px;
+  animation: ax-blink-r 3s steps(1, end) infinite;
+}
+
+.ax-eyelid-l {
+  transform-origin: 9.94px 30.24px;
+  animation: ax-blink-l 3s steps(1, end) infinite;
+}
+
+@keyframes ax-blink-r {
+  0%, 32.22% { transform: scaleY(0); }
+  34.44% { transform: scaleY(1); }
+  37.78%, 41.11% { transform: scaleY(0); }
+  42.78% { transform: scaleY(1); }
+  45.56%, 66.67% { transform: scaleY(0); }
+  70%, 78.89% { transform: scaleY(1); }
+  83.33%, 100% { transform: scaleY(0); }
+}
+
+@keyframes ax-blink-l {
+  0%, 32.22% { transform: scaleY(0); }
+  34.44% { transform: scaleY(1); }
+  37.78%, 41.11% { transform: scaleY(0); }
+  42.78% { transform: scaleY(1); }
+  45.56%, 66.67% { transform: scaleY(0); }
+  70%, 78.89% { transform: scaleY(0.22); }
+  83.33%, 100% { transform: scaleY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ax-eyelid-l,
+  .ax-eyelid-r {
+    animation: none;
+    transform: scaleY(0);
+  }
+}
