@@ -16,31 +16,68 @@ from typing import Iterator
 
 TABLE = """
 CREATE TABLE IF NOT EXISTS tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task          TEXT    NOT NULL,
+    status        TEXT    NOT NULL DEFAULT 'pending',
+    project       TEXT,
+    assignee_id   TEXT,
+    created_by    TEXT,
+    parent_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    key           TEXT    UNIQUE,
+    result        TEXT,
+    priority      INTEGER NOT NULL DEFAULT 0,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    max_attempts  INTEGER,
+    retry_after   REAL,
+    lease_expires REAL,
+    created_at    REAL    NOT NULL,
+    updated_at    REAL    NOT NULL
+);
+
+-- Зависимости: задача не выдаётся, пока все её предшественники не done.
+-- Цикл собрать нельзя по построению: связи задаются при создании, а на новую
+-- задачу к этому моменту никто ещё не ссылается.
+CREATE TABLE IF NOT EXISTS task_deps (
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_id)
+);
+
+-- Журнал переходов: только дописывается. Текущее состояние лежит в tasks,
+-- здесь — как оно таким стало, иначе разбирать инцидент будет не по чему.
+CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task        TEXT    NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'pending',
-    project     TEXT,
-    assignee_id TEXT,
-    created_by  TEXT,
-    parent_id   INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
-    key         TEXT    UNIQUE,
-    result      TEXT,
-    created_at  REAL    NOT NULL,
-    updated_at  REAL    NOT NULL
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    at          REAL    NOT NULL,
+    event       TEXT    NOT NULL,
+    actor       TEXT,
+    from_status TEXT,
+    to_status   TEXT,
+    detail      TEXT
 );
 """
 
 #: Индексы создаются ПОСЛЕ миграции: на старой базе таблица уже есть, и индекс
 #: по новой колонке упадёт, если досыпать её позже.
 INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_tasks_queue   ON tasks(status, assignee_id, id);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent  ON tasks(parent_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, status, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_queue    ON tasks(status, assignee_id, priority, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_project  ON tasks(project, status, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_lease    ON tasks(status, lease_expires);
+CREATE INDEX IF NOT EXISTS idx_deps_reverse   ON task_deps(depends_on_id);
+CREATE INDEX IF NOT EXISTS idx_events_task    ON task_events(task_id, id);
 """
 
 #: Колонки, добавленные после первой версии схемы. База могла быть создана
 #: раньше, поэтому CREATE TABLE IF NOT EXISTS их не добавит — досыпаем вручную.
-LATER_COLUMNS = {"project": "TEXT"}
+LATER_COLUMNS = {
+    "project": "TEXT",
+    "priority": "INTEGER NOT NULL DEFAULT 0",
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
+    "max_attempts": "INTEGER",
+    "retry_after": "REAL",
+    "lease_expires": "REAL",
+}
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None

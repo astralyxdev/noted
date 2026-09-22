@@ -25,9 +25,34 @@ export function at(iso: string): string {
   return new Date(iso).toLocaleString('ru-RU')
 }
 
+/**
+ * Задача, которая скорее всего брошена. При аренде это точный факт — срок
+ * истёк; без аренды остаётся прикидка по времени последнего обновления.
+ */
 export function isStale(task: TaskSummary): boolean {
   if (task.status !== 'in_progress') return false
+  if (task.lease_expires) return new Date(task.lease_expires).getTime() < Date.now()
   return (Date.now() - new Date(task.updated_at).getTime()) / 1000 > STALE_AFTER_S
+}
+
+/** Через сколько истечёт аренда, словами. */
+export function leaseLeft(task: TaskSummary): string | null {
+  if (!task.lease_expires || task.status !== 'in_progress') return null
+  const seconds = (new Date(task.lease_expires).getTime() - Date.now()) / 1000
+  if (seconds <= 0) return 'истекла'
+  if (seconds < 60) return `${Math.ceil(seconds)} с`
+  return `${Math.ceil(seconds / 60)} мин`
+}
+
+export const EVENT_LABEL: Record<string, string> = {
+  created: 'создана',
+  claimed: 'взята в работу',
+  status: 'смена статуса',
+  retry: 'отправлена на повтор',
+  reaped: 'возвращена в очередь',
+  dead_letter: 'попытки исчерпаны',
+  blocked: 'заблокирована',
+  unblocked: 'разблокирована',
 }
 
 export function title(task: Pick<TaskSummary, 'task'>): string {

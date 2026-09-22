@@ -30,6 +30,8 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
   const [assignee, setAssignee] = useState('')
   const [scope, setScope] = useState('')
   const [payload, setPayload] = useState('')
+  const [priority, setPriority] = useState('0')
+  const [attempts, setAttempts] = useState('')
   const [payloadError, setPayloadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -41,6 +43,8 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
     setAssignee('')
     setPayload('')
     setPayloadError(null)
+    setPriority('0')
+    setAttempts('')
     setScope(project ?? '')
   }, [open, project])
 
@@ -69,6 +73,8 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
         task,
         project: scope.trim() || null,
         assignee_id: assignee.trim() || null,
+        priority: Number(priority) || 0,
+        max_attempts: attempts.trim() ? Math.max(1, Number(attempts)) : null,
       })
       toast({ title: `Задача #${created.id} поставлена`, color: 'green' })
       onOpenChange(false)
@@ -130,6 +136,32 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
                   onChange={(event) => setAssignee(event.target.value)}
                   placeholder="общий пул"
                 />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="task-priority">Приоритет</Label>
+                <Input
+                  id="task-priority"
+                  type="number"
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                />
+                <p className="text-muted-foreground text-xs">Больше — раньше выдаётся.</p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="task-attempts">Попыток</Label>
+                <Input
+                  id="task-attempts"
+                  type="number"
+                  min={1}
+                  value={attempts}
+                  onChange={(event) => setAttempts(event.target.value)}
+                  placeholder="без повторов"
+                />
+                <p className="text-muted-foreground text-xs">Провал вернёт задачу в очередь с паузой.</p>
               </div>
             </div>
 

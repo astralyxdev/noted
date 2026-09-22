@@ -15,7 +15,7 @@ from mcp.client.client import Client
 async def test_tools_are_published(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
         names = {tool.name for tool in (await mcp.list_tools()).tools}
-    assert names == {"set_task", "get_tasks", "get_task", "set_status", "claim_task"}
+    assert names == {"set_task", "get_tasks", "get_task", "set_status", "claim_task", "heartbeat"}
 
 
 async def test_full_cycle_over_http(live_server):
@@ -69,3 +69,40 @@ async def test_missing_task_is_a_normal_answer(live_server):
         result = await mcp.call_tool("get_task", {"task_id": 999})
     assert not result.is_error
     assert result.structured_content["outcome"] == "not_found"
+
+
+async def test_lease_and_heartbeat_over_http(live_server):
+    async with Client(f"{live_server}/mcp/") as mcp:
+        created = (await mcp.call_tool("set_task", {"task": {"title": "долгая"}})).structured_content
+        task_id = created["task"]["id"]
+
+        claimed = (
+            await mcp.call_tool("claim_task", {"assignee_id": "agent-1", "lease_s": 30})
+        ).structured_content
+        assert claimed["outcome"] == "claimed"
+        assert claimed["task"]["lease_expires"] is not None
+
+        beat = (
+            await mcp.call_tool("heartbeat", {"task_id": task_id, "assignee_id": "agent-1", "lease_s": 60})
+        ).structured_content
+        assert beat["outcome"] == "updated"
+
+        foreign = (
+            await mcp.call_tool("heartbeat", {"task_id": task_id, "assignee_id": "agent-2"})
+        ).structured_content
+        assert foreign["outcome"] == "not_owner"
+
+
+async def test_journal_is_available_to_the_agent(live_server):
+    async with Client(f"{live_server}/mcp/") as mcp:
+        created = (await mcp.call_tool("set_task", {"task": {"title": "с журналом"}})).structured_content
+        task_id = created["task"]["id"]
+        await mcp.call_tool("claim_task", {"assignee_id": "agent-1"})
+
+        with_log = (
+            await mcp.call_tool("get_task", {"task_id": task_id, "with_events": True})
+        ).structured_content
+        assert [e["event"] for e in with_log["events"]] == ["created", "claimed"]
+
+        without = (await mcp.call_tool("get_task", {"task_id": task_id})).structured_content
+        assert "events" not in without

@@ -11,11 +11,16 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from api.utils.tool_docs import (
+    CLAIM_TASK,
+    GET_TASK,
+    GET_TASKS,
+    HARD_ERRORS,
+    HEARTBEAT,
+    SET_STATUS,
+    SET_TASK,
+)
 from mcp_adapter.client import request
-
-#: Исходы, которые агент должен увидеть как ошибку инструмента, а не как результат.
-#: not_found, status_conflict и empty сюда не входят: это штатные ответы.
-HARD_ERRORS = {"unauthorized", "validation_error", "api_unavailable", "internal_error"}
 
 server = MCPServer(
     name="noted",
@@ -34,7 +39,7 @@ def _check(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-@server.tool()
+@server.tool(description=SET_TASK)
 async def set_task(
     task: dict[str, Any],
     project: str | None = None,
@@ -42,16 +47,10 @@ async def set_task(
     parent_id: int | None = None,
     key: str | None = None,
     created_by: str | int | None = None,
+    priority: int = 0,
+    max_attempts: int | None = None,
+    depends_on: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Поставить задачу.
-
-    task — произвольный JSON-объект с описанием работы. project задаёт скоуп:
-    агент, работающий в этом проекте, заберёт только его задачи. assignee_id=null
-    кладёт задачу в общий пул, откуда её возьмёт первый свободный агент. parent_id
-    связывает подзадачу с родительской. key — ключ идемпотентности: повторный
-    вызов с тем же ключом не создаст дубль и вернёт outcome="exists".
-    Исходы: created, exists.
-    """
     payload = {
         "task": task,
         "project": project,
@@ -59,11 +58,14 @@ async def set_task(
         "parent_id": parent_id,
         "key": key,
         "created_by": created_by,
+        "priority": priority,
+        "max_attempts": max_attempts,
+        "depends_on": depends_on,
     }
     return _check(await request("POST", "/api/tasks", json=payload))
 
 
-@server.tool()
+@server.tool(description=GET_TASKS)
 async def get_tasks(
     assignee_id: str | int | None = None,
     status: str | list[str] | None = None,
@@ -74,14 +76,6 @@ async def get_tasks(
     stale_seconds: float | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Список задач, свежие первыми.
-
-    status — строка или список (["pending","in_progress"] = всё открытое).
-    project сужает до одного проекта, unscoped=true — только задачи без проекта.
-    unassigned=true — только общий пул. stale_seconds — задачи, не обновлявшиеся
-    дольше N секунд: так находятся зависшие in_progress после падения агента.
-    Поле result в списке не приходит — за ним идите в get_task. Исход: ok.
-    """
     params: list[tuple[str, Any]] = []
     if assignee_id is not None:
         params.append(("assignee_id", assignee_id))
@@ -101,46 +95,44 @@ async def get_tasks(
     return _check(await request("GET", "/api/tasks", params=params))
 
 
-@server.tool()
-async def get_task(task_id: int) -> dict[str, Any]:
-    """Одна задача целиком, вместе с result. Исходы: ok, not_found."""
-    return _check(await request("GET", f"/api/tasks/{task_id}"))
+@server.tool(description=GET_TASK)
+async def get_task(task_id: int, with_events: bool = False) -> dict[str, Any]:
+    path = f"/api/tasks/{task_id}/events" if with_events else f"/api/tasks/{task_id}"
+    return _check(await request("GET", path))
 
 
-@server.tool()
+@server.tool(description=SET_STATUS)
 async def set_status(
     task_id: int,
     status: str,
     result: Any = None,
     if_status: str | None = None,
+    assignee_id: str | int | None = None,
 ) -> dict[str, Any]:
-    """Сменить статус задачи и приложить результат.
-
-    status: pending | in_progress | blocked | done | failed | cancelled.
-    result пишется и для успеха, и для ошибки (при failed кладите туда причину).
-    if_status делает вызов compare-and-set: запись пройдёт, только если задача
-    всё ещё в этом статусе, иначе придёт outcome="status_conflict" с актуальным
-    состоянием — так двое не доделывают одну задачу.
-    Исходы: updated, not_found, status_conflict.
-    """
-    payload = {"status": status, "result": result, "if_status": if_status}
+    payload = {"status": status, "result": result, "if_status": if_status, "assignee_id": assignee_id}
     return _check(await request("PATCH", f"/api/tasks/{task_id}/status", json=payload))
 
 
-@server.tool()
-async def claim_task(assignee_id: str | int, project: str | None = None, timeout_s: float = 0) -> dict[str, Any]:
-    """Атомарно забрать следующую задачу и перевести её в in_progress.
-
-    Сначала выдаются задачи, адресованные этому assignee_id, затем общий пул,
-    внутри группы — FIFO. Двое не могут забрать одну задачу.
-    project сужает выборку строго: назвав проект, агент не заберёт ни чужую
-    задачу, ни задачу без проекта.
-    timeout_s=0 — забрать, если есть; timeout_s>0 — ждать появления до N секунд
-    (это дешевле, чем крутить опрос). Если ждать нечего, придёт outcome="empty".
-    Исходы: claimed, empty.
-    """
-    payload = {"assignee_id": assignee_id, "project": project, "timeout_s": timeout_s}
+@server.tool(description=CLAIM_TASK)
+async def claim_task(
+    assignee_id: str | int,
+    project: str | None = None,
+    timeout_s: float = 0,
+    lease_s: float | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "assignee_id": assignee_id,
+        "project": project,
+        "timeout_s": timeout_s,
+        "lease_s": lease_s,
+    }
     return _check(await request("POST", "/api/tasks/claim", json=payload, timeout=timeout_s + 10.0))
+
+
+@server.tool(description=HEARTBEAT)
+async def heartbeat(task_id: int, assignee_id: str | int, lease_s: float | None = None) -> dict[str, Any]:
+    payload = {"assignee_id": assignee_id, "lease_s": lease_s}
+    return _check(await request("POST", f"/api/tasks/{task_id}/heartbeat", json=payload))
 
 
 def main() -> None:

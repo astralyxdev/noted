@@ -163,3 +163,56 @@ async def test_long_poll_gives_up_with_empty():
 
     assert response.json()["outcome"] == "empty"
     assert 0.25 < elapsed < 3.0
+
+
+def test_heartbeat_extends_and_guards_ownership(client):
+    task_id = client.post("/api/tasks", json={"task": {"n": 1}}).json()["task"]["id"]
+    client.post("/api/tasks/claim", json={"assignee_id": "agent-1", "lease_s": 30})
+
+    extended = client.post(f"/api/tasks/{task_id}/heartbeat", json={"assignee_id": "agent-1", "lease_s": 60})
+    assert extended.status_code == 200
+    assert extended.json()["outcome"] == "updated"
+    assert extended.json()["task"]["lease_expires"] is not None
+
+    foreign = client.post(f"/api/tasks/{task_id}/heartbeat", json={"assignee_id": "agent-2"})
+    assert foreign.status_code == 409
+    assert foreign.json()["outcome"] == "not_owner"
+
+
+def test_foreign_agent_cannot_close_the_task_through_the_api(client):
+    task_id = client.post("/api/tasks", json={"task": {"n": 1}}).json()["task"]["id"]
+    client.post("/api/tasks/claim", json={"assignee_id": "agent-1", "lease_s": 30})
+
+    response = client.patch(
+        f"/api/tasks/{task_id}/status", json={"status": "done", "assignee_id": "agent-2"}
+    )
+    assert response.status_code == 409
+    assert response.json()["outcome"] == "not_owner"
+    assert "agent-1" in response.json()["message"]
+
+
+def test_events_endpoint_returns_the_journal(client):
+    task_id = client.post("/api/tasks", json={"task": {"n": 1}, "created_by": "orchestrator"}).json()["task"]["id"]
+    client.post("/api/tasks/claim", json={"assignee_id": "agent-1"})
+    client.patch(f"/api/tasks/{task_id}/status", json={"status": "done"})
+
+    payload = client.get(f"/api/tasks/{task_id}/events").json()
+    assert payload["outcome"] == "ok"
+    assert [e["event"] for e in payload["events"]] == ["created", "claimed", "status"]
+    assert payload["count"] == 3
+
+    assert client.get("/api/tasks/999/events").status_code == 404
+
+
+def test_create_accepts_priority_attempts_and_dependencies(client):
+    first = client.post("/api/tasks", json={"task": {"n": 1}}).json()["task"]
+    second = client.post(
+        "/api/tasks",
+        json={"task": {"n": 2}, "priority": 5, "max_attempts": 3, "depends_on": [first["id"]]},
+    ).json()["task"]
+
+    assert second["priority"] == 5
+    assert second["max_attempts"] == 3
+
+    claimed = client.post("/api/tasks/claim", json={"assignee_id": "agent-1"}).json()
+    assert claimed["task"]["id"] == first["id"], "зависимая задача ждёт, несмотря на приоритет"

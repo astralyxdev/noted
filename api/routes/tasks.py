@@ -7,7 +7,14 @@ import time
 from fastapi import APIRouter, Query
 
 from api.models.envelope import Outcome, envelope
-from api.models.task import MAX_TIMEOUT_S, ClaimRequest, CreateTaskRequest, SetStatusRequest, Status
+from api.models.task import (
+    MAX_TIMEOUT_S,
+    ClaimRequest,
+    CreateTaskRequest,
+    HeartbeatRequest,
+    SetStatusRequest,
+    Status,
+)
 from api.services import tasks as tasks_service
 from api.utils import events, respond, run_service
 
@@ -24,6 +31,9 @@ async def create_task(request: CreateTaskRequest):
         parent_id=request.parent_id,
         key=request.key,
         created_by=request.created_by,
+        priority=request.priority,
+        max_attempts=request.max_attempts,
+        depends_on=request.depends_on,
     )
     if created:
         await events.notify_new_task()
@@ -36,7 +46,12 @@ async def claim_task(request: ClaimRequest):
     вместо того чтобы заставлять агента крутить опрос."""
     deadline = time.monotonic() + min(request.timeout_s, MAX_TIMEOUT_S)
     while True:
-        task = await run_service(tasks_service.claim, request.assignee_id, project=request.project)
+        task = await run_service(
+            tasks_service.claim,
+            request.assignee_id,
+            project=request.project,
+            lease_s=request.lease_s,
+        )
         if task is not None:
             await events.notify_change()
             return respond(envelope(Outcome.claimed, task=task))
@@ -87,6 +102,7 @@ async def set_task_status(task_id: int, request: SetStatusRequest):
         status=request.status,
         result=request.result,
         if_status=request.if_status,
+        actor=request.assignee_id,
     )
     if outcome is Outcome.updated:
         # Возврат в pending — это новая работа для агентов; остальное видит только дэшборд.
@@ -96,8 +112,36 @@ async def set_task_status(task_id: int, request: SetStatusRequest):
         Outcome.not_found: f"задачи {task_id} не существует",
         Outcome.status_conflict: f"ожидался статус {request.if_status.value if request.if_status else ''}, "
         f"а задача уже в {task.status.value if task else ''}",
+        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
     }.get(outcome)
     return respond(envelope(outcome, message, task=task))
+
+
+@router.post("/tasks/{task_id}/heartbeat")
+async def heartbeat(task_id: int, request: HeartbeatRequest):
+    """Продлить аренду: исполнитель жив и всё ещё делает эту задачу."""
+    outcome, task = await run_service(
+        tasks_service.heartbeat,
+        task_id=task_id,
+        assignee_id=request.assignee_id,
+        lease_s=request.lease_s,
+    )
+    message = {
+        Outcome.not_found: f"задачи {task_id} не существует",
+        Outcome.status_conflict: f"задача не в работе, а в {task.status.value if task else ''}",
+        Outcome.not_owner: f"задача занята исполнителем {task.assignee_id if task else ''}",
+    }.get(outcome)
+    return respond(envelope(outcome, message, task=task))
+
+
+@router.get("/tasks/{task_id}/events")
+async def get_task_events(task_id: int, limit: int = 200):
+    """Журнал переходов задачи — кто и когда что с ней сделал."""
+    task = await run_service(tasks_service.get, task_id)
+    if task is None:
+        return respond(envelope(Outcome.not_found, f"задачи {task_id} не существует", task=None))
+    log = await run_service(tasks_service.events, task_id, limit)
+    return respond(envelope(Outcome.ok, task=task, events=log, count=len(log)))
 
 
 @router.get("/stats")

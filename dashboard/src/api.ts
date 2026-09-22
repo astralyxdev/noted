@@ -17,11 +17,29 @@ export type TaskSummary = {
   created_by: string | null
   parent_id: number | null
   key: string | null
+  priority: number
+  attempts: number
+  /** Сколько предшественников ещё не закрыто: пока не ноль, задачу никто не заберёт. */
+  waiting_on: number
+  max_attempts: number | null
+  retry_after: string | null
+  lease_expires: string | null
   created_at: string
   updated_at: string
 }
 
-export type Task = TaskSummary & { result: unknown }
+export type Task = TaskSummary & { result: unknown; depends_on: number[] }
+
+export type TaskEvent = {
+  id: number
+  task_id: number
+  at: string
+  event: string
+  actor: string | null
+  from_status: Status | null
+  to_status: Status | null
+  detail: Record<string, unknown> | null
+}
 
 export type Stats = Record<Status | 'total', number>
 
@@ -32,6 +50,7 @@ type Envelope = {
   task?: Task
   tasks?: TaskSummary[]
   count?: number
+  events?: TaskEvent[]
   stats?: Stats
   projects?: string[]
   assignees?: string[]
@@ -108,6 +127,10 @@ export const api = {
     return (await call(`/api/tasks/${id}`)).task as Task
   },
 
+  async events(id: number): Promise<TaskEvent[]> {
+    return (await call(`/api/tasks/${id}/events`)).events ?? []
+  },
+
   async children(parentId: number): Promise<TaskSummary[]> {
     return (await call(`/api/tasks?parent_id=${parentId}&limit=500`)).tasks ?? []
   },
@@ -116,6 +139,8 @@ export const api = {
     task: Record<string, unknown>
     project?: string | null
     assignee_id?: string | null
+    priority?: number
+    max_attempts?: number | null
   }): Promise<Task> {
     const body = await call('/api/tasks', {
       method: 'POST',

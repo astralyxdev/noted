@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from api.models.task import Task, TaskSummary
+from api.models.task import Task, TaskEvent, TaskSummary
 
 
 class Outcome(str, Enum):
@@ -23,6 +23,7 @@ class Outcome(str, Enum):
     empty = "empty"
     not_found = "not_found"
     status_conflict = "status_conflict"
+    not_owner = "not_owner"
     parent_not_found = "parent_not_found"
     unauthorized = "unauthorized"
     validation_error = "validation_error"
@@ -39,6 +40,7 @@ HTTP_STATUS: dict[Outcome, int] = {
     Outcome.empty: 200,
     Outcome.not_found: 404,
     Outcome.status_conflict: 409,
+    Outcome.not_owner: 409,
     Outcome.parent_not_found: 404,
     Outcome.unauthorized: 401,
     Outcome.validation_error: 422,
@@ -62,6 +64,8 @@ class Envelope(BaseModel):
     message: str | None = None
     task: Task | TaskSummary | None = None
     tasks: list[TaskSummary] | None = None
+    events: list[TaskEvent] | None = None
+    requeued: list[int] | None = None
     count: int | None = None
     stats: dict[str, int] | None = None
     projects: list[str] | None = None

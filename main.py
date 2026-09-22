@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -19,7 +20,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from api.models.envelope import Outcome, body, envelope
 from api.routes import live_router, tasks_router
 from api.routes.mcp import build as build_mcp
+from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
+from api.utils import events as task_events
+from api.utils import run_service
 from api.utils import respond
 from api.utils.authorization import middleware as token_middleware
 
@@ -27,6 +31,26 @@ log = logging.getLogger("noted")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+DEFAULT_REAP_INTERVAL_S = 15.0
+
+
+async def reaper() -> None:
+    """Возвращает в очередь задачи, чью аренду никто не продлил.
+
+    Без этого `stale_seconds` даёт только обнаружение: упавший агент оставляет
+    задачу висеть навсегда. Здесь она чинится сама.
+    """
+    interval = float(os.environ.get("NOTED_REAP_INTERVAL_S") or DEFAULT_REAP_INTERVAL_S)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            requeued = await run_service(tasks_service.reap_expired)
+        except Exception:  # noqa: BLE001 — сборщик не должен умирать от одной ошибки
+            log.exception("сборщик аренд споткнулся")
+            continue
+        if requeued:
+            log.info("аренда истекла, задачи вернулись в очередь: %s", requeued)
+            await task_events.notify_new_task()
 
 
 def ui_dir() -> Path:
@@ -43,7 +67,13 @@ def create_app() -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         async with mcp.session_manager.run():
-            yield
+            collector = asyncio.create_task(reaper())
+            try:
+                yield
+            finally:
+                collector.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await collector
 
     app = FastAPI(
         title="noted",

@@ -21,7 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { STATUSES, type Status, type TaskSummary } from '@/api'
-import { STATUS_COLOR, ago, at, isStale, title } from '@/lib/format'
+import { STATUS_COLOR, ago, at, isStale, leaseLeft, title } from '@/lib/format'
 
 type Props = {
   tasks: TaskSummary[]
@@ -135,8 +135,24 @@ export function TaskTable({
               )}
               {isStale(task) && (
                 <Badge color="amber" variant="outline" size="sm" className="ml-2">
-                  залипла
+                  {task.lease_expires ? 'аренда истекла' : 'залипла'}
                 </Badge>
+              )}
+              {task.waiting_on > 0 && (
+                <Badge color="violet" variant="outline" size="sm" className="ml-2">
+                  ждёт {task.waiting_on}
+                </Badge>
+              )}
+              {task.attempts > 1 && (
+                <span className="text-muted-foreground ml-2 font-mono text-xs">
+                  попытка {task.attempts}
+                  {task.max_attempts ? ` из ${task.max_attempts}` : ''}
+                </span>
+              )}
+              {task.priority !== 0 && (
+                <span className="text-muted-foreground ml-2 font-mono text-xs">
+                  приоритет {task.priority}
+                </span>
               )}
             </TableCell>
 
@@ -146,6 +162,7 @@ export function TaskTable({
 
             <TableCell className="text-muted-foreground font-mono text-xs" title={at(task.updated_at)}>
               {ago(task.updated_at)}
+              {leaseLeft(task) && <span className="block opacity-70">аренда {leaseLeft(task)}</span>}
             </TableCell>
 
             <TableCell>

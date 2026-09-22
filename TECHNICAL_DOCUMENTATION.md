@@ -86,9 +86,29 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by  TEXT,
     parent_id   INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     key         TEXT    UNIQUE,
-    result      TEXT,                          -- JSON
-    created_at  REAL    NOT NULL,              -- unix, наружу отдаётся ISO-8601
-    updated_at  REAL    NOT NULL
+    result        TEXT,                          -- JSON
+    priority      INTEGER NOT NULL DEFAULT 0,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    max_attempts  INTEGER,                       -- NULL = без повторов
+    retry_after   REAL,                          -- пауза после провала
+    lease_expires REAL,                          -- срок аренды
+    created_at    REAL    NOT NULL,              -- unix, наружу отдаётся ISO-8601
+    updated_at    REAL    NOT NULL
+);
+
+-- Зависимости. Цикл собрать нельзя по построению: связи задаются при создании,
+-- а на новую задачу к этому моменту никто ещё не ссылается.
+CREATE TABLE IF NOT EXISTS task_deps (
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_id)
+);
+
+-- Журнал переходов: только дописывается.
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    at REAL NOT NULL, event TEXT NOT NULL, actor TEXT,
+    from_status TEXT, to_status TEXT, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_queue   ON tasks(status, assignee_id, id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent  ON tasks(parent_id);
@@ -128,8 +148,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, status, id);
   Оба запроса в одной транзакции. `ORDER BY (assignee_id IS NULL), id` даёт «сначала адресованные
   мне, потом общий пул», внутри группы FIFO. `AND status='pending'` в `UPDATE` — страховка на
   случай, если сериализацию когда-нибудь ослабят.
-- `list_tasks` не отдаёт `result`, лимит зажат в `[1, 500]`.
+- `list_tasks` не отдаёт `result`, лимит зажат в `[1, 500]`. Счётчик незакрытых зависимостей
+  (`waiting_on`) считается подзапросом в том же SELECT — иначе список делал бы N+1.
 - `stats` считает внутри скоупа: иначе при выбранном проекте чипы дэшборда врут.
+
+**Аренда и повторы.** Захват ставит `lease_expires = now + lease_s` и увеличивает `attempts`.
+`heartbeat` продлевает срок, но только своей задаче и только пока она `in_progress`.
+`reap_expired()` раз в `NOTED_REAP_INTERVAL_S` возвращает просроченные задачи в `pending`, снимая
+исполнителя; если попытки исчерпаны — отправляет в `failed` с пометкой `dead_letter`, иначе задачу
+воскрешали бы вечно. Фоновая петля живёт в `main.py`: сборщик зовёт сервис, а не наоборот, поэтому
+слой сервисов остаётся без знания о планировщике.
+
+`set_status(failed)` при оставшихся попытках не пишет `failed`, а возвращает задачу в `pending`
+с `retry_after = now + backoff(attempts)`; backoff экспоненциальный с потолком.
+
+**Зависимости.** Выдача фильтруется подзапросом `NOT EXISTS (... p.status <> 'done')` — состояние
+«готова к выдаче» нигде не хранится и не может рассинхронизироваться. Блокировка (`blocked`) и её
+снятие — отдельные переходы, чтобы это было видно человеку и в журнале.
+
+**Журнал.** `_log()` пишет в ту же транзакцию, что и изменение. Heartbeat намеренно не логируется:
+он частый и не несёт информации о переходе.
 
 ## 2. Конверт ответов (`models/envelope.py`)
 
@@ -148,6 +186,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, status, id);
 `create_app()` собирает приложение: роутеры, MCP-транспорт, статика дэшборда, middleware и
 обработчики ошибок. Это **фабрика**, а не модульный синглтон — менеджер сессий MCP можно запустить
 ровно один раз за свою жизнь, поэтому каждому приложению нужен свой.
+
+`main.py` также держит фоновый сборщик аренд: задача создаётся в lifespan и снимается при
+остановке. Сборщик не умирает от одной ошибки — логирует и продолжает.
 
 `routes/tasks.py` — роуты из таблицы в `SPEC.md`. Каждый: валидация pydantic, вызов сервиса через
 `anyio.to_thread.run_sync` (sqlite синхронный — нельзя блокировать event loop), упаковка в конверт.
@@ -241,6 +282,13 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 - `services/test_tasks.py` — идемпотентность по `key`, CAS и конфликт, приоритет адресных задач над
   пулом, строгость скоупа проекта, фильтры, `stale_seconds`, миграция старой базы, конкурентный
   захват в потоках. Приложение не поднимается.
+- `services/test_lease.py` — истёкшая аренда возвращает задачу в пул, heartbeat её удерживает,
+  чужой heartbeat и чужое закрытие получают `not_owner`, `lease_s=0` не собирается никогда.
+- `services/test_retry.py` — провал возвращает в очередь с паузой, пауза соблюдается при выдаче,
+  исчерпание попыток оставляет в `failed`, истёкшая аренда на последней попытке уходит в dead letter.
+- `services/test_deps.py` — задача ждёт предшественников, провал предшественника блокирует, успех
+  разблокирует, приоритет сортирует внутри группы, но не отменяет адресность.
+- `services/test_journal.py` — весь путь задачи виден в журнале, записи не смешиваются между задачами.
 - `routes/test_tasks.py` — по кейсу на каждый `outcome`, коды HTTP, токен-middleware, long-poll.
 - `routes/test_dashboard.py` — SSE присылает событие после создания задачи, `/api/stats` отдаёт
   счётчики вместе со списками проектов и исполнителей, собранный дэшборд отдаётся с корня.
@@ -266,6 +314,11 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 - [ ] Дэшборд показывает задачи, фильтры живут в URL, статус меняется из меню строки.
 - [ ] Образ содержит собранный фронтенд, но не содержит Node; задачи переживают пересоздание
       контейнера.
+- [ ] Агент умер с задачей в работе: аренда истекла — задача вернулась в очередь сама, без человека.
+- [ ] Провал с `max_attempts` повторяется с растущей паузой и оседает в `failed`, когда попытки кончились.
+- [ ] Задача с незакрытой зависимостью не выдаётся никому и видна в списке как ждущая.
+- [ ] Чужой агент не может закрыть или продлить занятую задачу.
+- [ ] Журнал показывает полный путь задачи, включая возвраты и повторы.
 - [ ] `grep -r "sqlite3\|SELECT" api/routes mcp_adapter` пуст: SQL не утёк из сервисов.
 
 ## Риски и решения
@@ -279,6 +332,10 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 | Ядро не поднято, агент висит | stdio-адаптер отдаёт `api_unavailable` с адресом в `message` |
 | Крупные `task`/`result` раздувают контекст агента | `result` только в `get_task`, лимит списка 500 |
 | Открытые SSE-соединения копятся | keepalive раз в 20 с, отвал соединения закрывает генератор |
+| Задача воскресает бесконечно | попытка засчитывается при захвате; исчерпание → dead letter |
+| Сборщик аренд падает и тишина | исключение логируется, петля продолжается |
+| Агент закрывает чужую работу | `assignee_id` в `set_status`/`heartbeat`, исход `not_owner` |
+| Задача в pending, которую никто не берёт | `waiting_on` в списке показывает незакрытые зависимости |
 | Описания инструментов разъезжаются между транспортами | общий `utils/tool_docs.py` |
 | Логика расползается в роуты | сервисы не импортируют FastAPI; их тесты не поднимают приложение |
 | Дэшборд перехватывает /api, /events или /mcp | статика монтируется последней, после роутеров |

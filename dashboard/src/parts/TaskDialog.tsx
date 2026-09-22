@@ -12,8 +12,8 @@ import {
 import { Select } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Spinner } from '@/components/ui/spinner'
-import { STATUSES, api, type Status, type Task, type TaskSummary } from '@/api'
-import { STATUS_COLOR, at, pretty, title } from '@/lib/format'
+import { STATUSES, api, type Status, type Task, type TaskEvent, type TaskSummary } from '@/api'
+import { EVENT_LABEL, STATUS_COLOR, at, ago, leaseLeft, pretty, title } from '@/lib/format'
 
 type Props = {
   taskId: number | null
@@ -27,22 +27,29 @@ type Props = {
 export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Props) {
   const [task, setTask] = useState<Task | null>(null)
   const [children, setChildren] = useState<TaskSummary[]>([])
+  const [log, setLog] = useState<TaskEvent[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (taskId === null) {
       setTask(null)
       setChildren([])
+      setLog([])
       setError(null)
       return
     }
     let alive = true
     void (async () => {
       try {
-        const [loaded, kids] = await Promise.all([api.get(taskId), api.children(taskId)])
+        const [loaded, kids, history] = await Promise.all([
+          api.get(taskId),
+          api.children(taskId),
+          api.events(taskId),
+        ])
         if (!alive) return
         setTask(loaded)
         setChildren(kids)
+        setLog(history)
         setError(null)
       } catch (cause) {
         if (alive) setError(cause instanceof Error ? cause.message : String(cause))
@@ -96,6 +103,13 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
                 <Fact label="проект" value={task.project ?? '—'} />
                 <Fact label="исполнитель" value={task.assignee_id ?? 'общий пул'} />
                 <Fact label="поставил" value={task.created_by ?? '—'} />
+                <Fact
+                  label="попытки"
+                  value={task.max_attempts ? `${task.attempts} из ${task.max_attempts}` : String(task.attempts)}
+                />
+                {task.priority !== 0 && <Fact label="приоритет" value={String(task.priority)} />}
+                {leaseLeft(task) && <Fact label="аренда" value={`осталось ${leaseLeft(task)}`} />}
+                {task.retry_after && <Fact label="повтор после" value={at(task.retry_after)} />}
                 <Fact label="создана" value={at(task.created_at)} />
                 <Fact label="обновлена" value={at(task.updated_at)} />
                 {task.key && <Fact label="ключ" value={task.key} />}
@@ -121,6 +135,27 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
                 )}
               </section>
 
+              {task.depends_on.length > 0 && (
+                <section className="flex flex-col gap-2">
+                  <h3 className="text-muted-foreground font-mono text-xs uppercase">
+                    ждёт задач · {task.depends_on.length}
+                  </h3>
+                  <ul className="flex flex-wrap gap-2">
+                    {task.depends_on.map((dep) => (
+                      <li key={dep}>
+                        <button
+                          type="button"
+                          className="hover:text-primary font-mono text-sm"
+                          onClick={() => onOpen(dep)}
+                        >
+                          #{dep}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
               {children.length > 0 && (
                 <section className="flex flex-col gap-2">
                   <h3 className="text-muted-foreground font-mono text-xs uppercase">
@@ -142,6 +177,32 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
                       </li>
                     ))}
                   </ul>
+                </section>
+              )}
+
+              {log.length > 0 && (
+                <section className="flex flex-col gap-2">
+                  <h3 className="text-muted-foreground font-mono text-xs uppercase">
+                    журнал · {log.length}
+                  </h3>
+                  <ol className="flex flex-col gap-1.5">
+                    {log.map((entry) => (
+                      <li key={entry.id} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                        <span className="text-muted-foreground font-mono text-xs" title={at(entry.at)}>
+                          {ago(entry.at)}
+                        </span>
+                        <span>{EVENT_LABEL[entry.event] ?? entry.event}</span>
+                        {entry.from_status && entry.to_status && (
+                          <span className="text-muted-foreground font-mono text-xs">
+                            {entry.from_status} → {entry.to_status}
+                          </span>
+                        )}
+                        {entry.actor && (
+                          <span className="text-muted-foreground font-mono text-xs">{entry.actor}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
                 </section>
               )}
 
