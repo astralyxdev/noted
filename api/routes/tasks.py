@@ -135,8 +135,13 @@ async def set_task_status(task_id: int, request: SetStatusRequest, http: Request
         force=request.force,
     )
     if outcome is Outcome.updated:
-        # Back to pending means new work for agents; the rest only the dashboard sees.
-        await (events.notify_new_task() if request.status is Status.pending else events.notify_change())
+        # Work may have appeared for a waiting agent in two ways: this task is
+        # claimable again — moved back to pending, or sent back by a retry —
+        # or it closed successfully and released whatever depended on it.
+        # Judged by the status the task ended up in, not the one that was
+        # asked for: a retry is requested as `failed` and lands on `pending`.
+        freed = task is not None and task.status in (Status.pending, Status.done)
+        await (events.notify_new_task() if freed else events.notify_change())
 
     message = {
         Outcome.not_found: f"task {task_id} does not exist",

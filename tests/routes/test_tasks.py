@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import httpx
@@ -228,3 +229,79 @@ def test_flood_is_answered_with_429(client, monkeypatch):
     assert response.status_code == 429
     assert response.json()["outcome"] == "rate_limited"
     assert client.get("/api/tasks").json()["count"] == 2
+
+
+def test_closing_a_predecessor_wakes_a_waiting_agent(client):
+    """A long poll must end when a dependency clears, not when it times out.
+
+    An agent waiting on an empty queue is woken by `notify_new_task`. A task
+    finishing used to count as "the state moved" and nothing more — but
+    finishing is exactly what releases whatever was waiting behind it, and the
+    agent that could take it was asleep.
+    """
+    first = client.post(
+        "/api/tasks", json={"task": {"step": 1}, "assignee_id": "owner"}
+    ).json()["task"]
+    second = client.post(
+        "/api/tasks", json={"task": {"step": 2}, "depends_on": [first["id"]]}
+    ).json()["task"]
+
+    # The waiter can take neither: the first is addressed elsewhere, the
+    # second is blocked behind it.
+    waiting = threading.Thread(target=lambda: results.append(
+        client.post("/api/tasks/claim", json={"assignee_id": "waiter", "timeout_s": 20}).json()
+    ))
+    results: list = []
+    waiting.start()
+    time.sleep(0.4)
+
+    client.post("/api/tasks/claim", json={"assignee_id": "owner"})
+    began = time.monotonic()
+    client.patch(f"/api/tasks/{first['id']}/status", json={"status": "done", "assignee_id": "owner"})
+
+    waiting.join(timeout=20)
+    woken_after = time.monotonic() - began
+
+    assert results and results[0]["outcome"] == "claimed"
+    assert results[0]["task"]["id"] == second["id"]
+    assert woken_after < 5, f"the agent waited out its timeout instead of being woken ({woken_after:.1f}s)"
+
+
+def test_a_retry_wakes_a_waiting_agent(monkeypatch):
+    """The same for a retry — with one more step to it.
+
+    A retry lands on `pending`, but not claimable yet: it waits out its
+    backoff. Waking an agent at the moment of failure is therefore not enough;
+    somebody has to ring the bell when the pause ends, and that is the
+    collector's other job.
+    """
+    monkeypatch.setenv("NOTED_RETRY_BASE_S", "1")
+    monkeypatch.setenv("NOTED_REAP_INTERVAL_S", "1")
+    with TestClient(main.create_app()) as client:
+        _retry_wakes(client)
+
+
+def _retry_wakes(client):
+    task = client.post(
+        "/api/tasks", json={"task": {"flaky": True}, "max_attempts": 3}
+    ).json()["task"]
+    client.post("/api/tasks/claim", json={"assignee_id": "first"})
+
+    results: list = []
+    waiting = threading.Thread(target=lambda: results.append(
+        client.post("/api/tasks/claim", json={"assignee_id": "second", "timeout_s": 20}).json()
+    ))
+    waiting.start()
+    time.sleep(0.4)
+
+    began = time.monotonic()
+    client.patch(
+        f"/api/tasks/{task['id']}/status",
+        json={"status": "failed", "assignee_id": "first", "result": {"why": "on purpose"}},
+    )
+    waiting.join(timeout=20)
+
+    assert results, "the waiting agent never returned"
+    assert results[0]["outcome"] == "claimed", "the retried task never came back to an agent"
+    assert results[0]["task"]["id"] == task["id"]
+    assert time.monotonic() - began < 8, "the agent waited out its timeout instead of being woken"

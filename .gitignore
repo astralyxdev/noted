@@ -32,6 +32,8 @@ dist/
 # A throwaway repository the demo agents build into. It is a test of noted,
 # not part of it.
 demo_agent_project/
+# Local MCP wiring for the demo: it carries real agent keys.
+.mcp.json
 
 # ── Editors and OS ────────────────────────────────────────────────────
 .DS_Store

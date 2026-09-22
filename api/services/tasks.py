@@ -767,6 +767,24 @@ def reap_expired() -> list[int]:
     return requeued
 
 
+def due_retries() -> int:
+    """Tasks whose post-failure pause has just run out.
+
+    A retry does not become claimable when it is written — it becomes
+    claimable when `retry_after` passes, and nothing happens at that moment to
+    wake an agent waiting on an empty queue. The collector looks for these on
+    its round and rings the bell. `retry_after` is cleared by the claim, so a
+    task counts here only until somebody takes it.
+    """
+    with database.reading() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks"
+            " WHERE status = 'pending' AND retry_after IS NOT NULL AND retry_after <= ?",
+            (time.time(),),
+        ).fetchone()
+    return row["n"]
+
+
 # ──────────────────────────────── summaries ──────────────────────────────
 
 

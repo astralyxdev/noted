@@ -43,6 +43,14 @@ services:
       NOTED_DB_URL: postgresql://${POSTGRES_USER:-noted}:${POSTGRES_PASSWORD:-noted}@postgres:5432/${POSTGRES_DB:-noted}
       # Set this if the core is exposed: then /api and /mcp require the header
       NOTED_TOKEN: ${NOTED_TOKEN:-}
+      # Left empty each of these keeps the default from .env.example. They are
+      # passed through because they are the ones an operator actually retunes.
+      NOTED_DB_POOL: ${NOTED_DB_POOL:-}
+      NOTED_LEASE_S: ${NOTED_LEASE_S:-}
+      NOTED_SESSION_TTL_S: ${NOTED_SESSION_TTL_S:-}
+      NOTED_REAP_INTERVAL_S: ${NOTED_REAP_INTERVAL_S:-}
+      NOTED_CREATE_LIMIT: ${NOTED_CREATE_LIMIT:-}
+      NOTED_CREATE_WINDOW_S: ${NOTED_CREATE_WINDOW_S:-}
 
 volumes:
   noted-pgdata:

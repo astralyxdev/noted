@@ -169,7 +169,13 @@ async def set_status(
         return _out(envelope(exc.code, exc.message, task=None))
 
     if outcome is Outcome.updated:
-        await (events.notify_new_task() if status == Status.pending.value else events.notify_change())
+        # Work may have appeared for a waiting agent in two ways: this task is
+        # claimable again — moved back to pending, or sent back by a retry —
+        # or it closed successfully and released whatever depended on it.
+        # Judged by the status the task ended up in, not the one that was
+        # asked for: a retry is requested as `failed` and lands on `pending`.
+        freed = task is not None and task.status in (Status.pending, Status.done)
+        await (events.notify_new_task() if freed else events.notify_change())
 
     message = {
         Outcome.not_found: f"task {task_id} does not exist",

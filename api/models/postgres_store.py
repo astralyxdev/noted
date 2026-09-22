@@ -17,6 +17,7 @@ translated here. One dialect in the source, two engines underneath.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import re
 import threading
@@ -160,6 +161,12 @@ def transaction() -> Iterator[Connection]:
     raises, so the transaction boundary is the `with` itself."""
     with pool().connection() as raw:
         yield Connection(raw)
+
+
+#: A pool that outlives the interpreter prints a page of warnings about threads
+#: it could not stop. Every entry point — the API, the CLI, a one-off script —
+#: gets a clean exit from here rather than having to remember.
+atexit.register(close)
 
 
 def wipe() -> None:

@@ -48,8 +48,12 @@ async def reaper() -> None:
         except Exception:  # noqa: BLE001 - one failure must not kill the collector
             log.exception("the lease collector stumbled")
             continue
-        if requeued:
-            log.info("leases expired, tasks returned to the queue: %s", requeued)
+        # A pause that has ended is work appearing, just like an expired lease:
+        # the row was written minutes ago and became claimable in silence.
+        due = await run_service(tasks_service.due_retries)
+        if requeued or due:
+            if requeued:
+                log.info("leases expired, tasks returned to the queue: %s", requeued)
             await task_events.notify_new_task()
 
         trimmed = await run_service(tasks_service.trim_journal)
