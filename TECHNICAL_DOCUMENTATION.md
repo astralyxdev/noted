@@ -4,6 +4,50 @@ How the task manager from `SPEC.md` is built: the layout, the decisions and the
 reasons behind them, an acceptance checklist. Sections follow dependency order —
 each one rests on the previous.
 
+## Measured
+
+One run, so read it as an order of magnitude rather than a specification.
+The composed stack on a laptop: the core in its container as a single uvicorn
+process, PostgreSQL 17 in another, both on Docker Desktop, everything over the
+published loopback port. Agents are concurrent HTTP clients carrying their own
+keys. The per-author creation limit was set to 0 for the throughput sweep —
+it is a guard rail against a looping agent, not a thing worth measuring.
+
+| operation | 1 agent | 4 | 16 | 64 |
+|---|---|---|---|---|
+| `create` | 339/s · p50 3 ms | 655/s · 5 ms | 649/s · 20 ms | 514/s · 71 ms |
+| `claim` | 278/s · p50 3 ms | 855/s · 4 ms | 610/s · 22 ms | 483/s · 76 ms |
+| create→claim→done | 98/s · p50 10 ms | 203/s · 19 ms | 197/s · 74 ms | 174/s · 269 ms |
+
+Throughput flattens around four concurrent agents and then holds: past that
+point the work is serialised by one Python process, and more agents buy
+latency rather than throughput. p99 at 64 agents is 0.5 s for a single
+operation and 0.7 s for a whole cycle. No errors at any width.
+
+What matters more than the rate:
+
+| under 64 agents claiming at once | result |
+|---|---|
+| 640 tasks claimed | 640 distinct — no task handed out twice |
+| dispatch order | priority, then addressed before pool, then oldest — exactly as promised |
+| a task with an unmet dependency | never handed out; claimable the instant its predecessor closed |
+| a key scoped to another project | refused on list, on read and on write |
+
+Recovery, with a 3-second lease and the collector on its default 15-second
+round: an abandoned task was back in the queue **11 s** after the agent
+stopped answering, with its holder cleared. Retries followed the documented
+backoff — 5 s, then 10 s — and the third failure left the task `failed` with
+`dead_letter` in its journal rather than retrying forever.
+
+And the part no synthetic load shows: four Claude agents built a small static
+site through the MCP endpoint, six tasks with a dependency chain, whoever was
+free taking whatever was ready. The interesting number there is the hand-off.
+From a predecessor being marked `done` to a waiting agent holding the task it
+unblocked: **2–3 ms**, four times out of four. That is the long poll being
+woken rather than timing out, and it is the difference between a dependency
+graph that flows and one that advances once per poll interval.
+
+
 ## 0. Stack and layout
 
 The core: Python 3.13, FastAPI with uvicorn, the `mcp` SDK, `httpx`, and one of

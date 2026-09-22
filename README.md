@@ -343,8 +343,8 @@ carry the tasks across.
 and one file that needs nothing installed is worth a great deal. PostgreSQL
 earns its second container when agents claim concurrently: under the file every
 writer queues behind one process lock, while PostgreSQL hands two claimers two
-different rows at the same instant (`FOR UPDATE SKIP LOCKED`). The measured
-difference is in [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
+different rows at the same instant (`FOR UPDATE SKIP LOCKED`). What it does
+under load, measured, is in [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
 
 **A guard rail.** The queue is open, so creation is capped per author
 (`NOTED_CREATE_LIMIT` per `NOTED_CREATE_WINDOW_S`). It catches a looping agent
