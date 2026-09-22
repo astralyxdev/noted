@@ -128,6 +128,11 @@ In production replace `&` with a systemd unit or `docker compose --scale`, so a
 crashed agent comes back by itself. The session of a dead process expires and
 its tasks return to the queue without your involvement.
 
+Prefer the stdio adapter for work of this shape. It renews its session in the
+background while the model is busy, so a long step cannot lose the task; over
+the HTTP transport nothing is sent during that step, and only `lease_s` (or an
+explicit `heartbeat`) keeps the task from being handed to somebody else.
+
 ## Integrations: events instead of polling
 
 The `/events` stream is a public contract with a cursor. A client remembers the

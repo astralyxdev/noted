@@ -63,7 +63,7 @@ def test_finishing_releases_the_session_so_latecomers_cannot_overwrite():
     service.claim("agent-1", session_id=session.id)
 
     service.set_status(task.id, "cancelled", force=True)
-    assert service.get(task.id).session_id is None
 
-    outcome, _ = service.set_status(task.id, "done", actor="agent-1", session_id=session.id)
-    assert outcome is Outcome.status_conflict
+    outcome, _ = service.set_status(task.id, "done", actor="agent-1", session_id=session.id, strict_session=True)
+    assert outcome is Outcome.status_conflict, "the cancellation is not overwritten"
+    assert service.get(task.id).status.value == "cancelled"

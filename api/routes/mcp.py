@@ -21,7 +21,7 @@ from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events, run_service
 from api.utils.authorization import ANONYMOUS, Principal
-from api.utils.authorization import from_headers
+from api.utils.authorization import from_headers, transport_of
 from api.utils.tool_docs import (
     CLAIM_TASK,
     GET_TASK,
@@ -40,11 +40,13 @@ INSTRUCTIONS = (
 
 
 def _who(ctx: Context | None) -> Principal:
-    """Who is calling the tool. The middleware has already checked the headers;
-    here we only read identity out of them, so it never comes from arguments."""
+    """Who is calling the tool. The middleware has already checked the headers
+    and renewed the session for this request; here we only read identity out of
+    them, so it never comes from the arguments — and renewing a second time
+    would be a second write under the global lock for one call."""
     if ctx is None:
         return ANONYMOUS
-    return from_headers(ctx.headers, "http-mcp") or ANONYMOUS
+    return from_headers(ctx.headers, transport_of(ctx.headers, "/mcp"), renew=False) or ANONYMOUS
 
 
 def _out(env) -> dict[str, Any]:
@@ -114,6 +116,7 @@ async def get_tasks(
             parent_id=parent_id,
             stale_seconds=stale_seconds,
             before_id=before_id,
+            allowed_projects=_who(ctx).projects,
             limit=limit,
         )
     except TaskError as exc:
@@ -125,6 +128,8 @@ async def get_task(task_id: int, with_events: bool = False, ctx: Context | None 
     found = await run_service(tasks_service.get, task_id)
     if found is None:
         return _out(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
+    if not _who(ctx).may_touch(found.project):
+        return _out(envelope(Outcome.forbidden, f"project {found.project} is outside the key's scope", task=None))
     if not with_events:
         return _out(envelope(Outcome.ok, task=found))
     log = await run_service(tasks_service.events, task_id)
@@ -141,6 +146,13 @@ async def set_status(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     who = _who(ctx)
+    if force and who.agent is not None and not who.is_admin:
+        return _out(envelope(Outcome.forbidden, "force is for administrators", task=None))
+
+    existing = await run_service(tasks_service.get, task_id)
+    if existing is not None and not who.may_touch(existing.project):
+        return _out(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
+
     try:
         outcome, task = await run_service(
             tasks_service.set_status,
@@ -150,6 +162,7 @@ async def set_status(
             if_status=if_status,
             actor=who.name or assignee_id,
             session_id=who.session_id,
+            strict_session=who.agent is not None and not who.is_admin,
             force=force,
         )
     except TaskError as exc:
@@ -215,6 +228,7 @@ async def heartbeat(
         assignee_id=who.name or assignee_id,
         lease_s=lease_s,
         session_id=who.session_id,
+        strict_session=who.agent is not None and not who.is_admin,
     )
     message = {
         Outcome.not_found: f"task {task_id} does not exist",

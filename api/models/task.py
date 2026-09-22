@@ -49,7 +49,6 @@ class TaskSummary(BaseModel):
     max_attempts: int | None
     retry_after: str | None
     lease_expires: str | None
-    session_id: str | None = None
     created_at: str
     updated_at: str
 

@@ -40,11 +40,9 @@ async def reaper() -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            # Bury the sessions nobody renewed first, so their tasks are freed
-            # in the same pass.
-            closed = await run_service(agents_service.expire_sessions)
-            if closed:
-                log.info("sessions closed after silence: %s", closed)
+            # A quiet session is not closed — the collector reads liveness from
+            # `renewed_at` directly, so a client that went silent for one long
+            # step can carry on afterwards.
             requeued = await run_service(tasks_service.reap_expired)
         except Exception:  # noqa: BLE001 - one failure must not kill the collector
             log.exception("the lease collector stumbled")
@@ -56,6 +54,8 @@ async def reaper() -> None:
         trimmed = await run_service(tasks_service.trim_journal)
         if trimmed:
             log.info("journal trimmed: %s entries of closed tasks", trimmed)
+
+        await run_service(agents_service.prune_sessions)
 
 
 def ui_dir() -> Path:

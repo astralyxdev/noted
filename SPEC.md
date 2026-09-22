@@ -93,27 +93,54 @@ header and the server derives `assignee_id` from it. Taking another's name is no
 possible: for an agent the `assignee_id` parameter is ignored, and `created_by`
 is filled in by the server too.
 
-**The scope is enforced.** A key carries a list of projects. A scoped agent
-neither sees nor claims another project's task, and posting into one answers
-`forbidden`. Tasks outside every project stay open to all: a shared pool is
-shared on purpose.
+**The scope is enforced on reading as well as writing.** A key carries a list of
+projects. A scoped agent cannot list, read, claim, modify or read the journal of
+another project's task, and posting into one answers `forbidden`. A scope that
+only guarded the way into the queue would be advisory whatever the documentation
+said.
+
+Tasks outside every project stay open to all, and that is deliberate: the shared
+pool is how work crosses scopes. An agent scoped to `pa` may post into the pool
+and an agent scoped to `pb` may execute it. If that is not what you want, give
+every task a project.
 
 **A session is one instance of an agent.** The same key can run in two processes,
 and by name they are indistinguishable. So a task is owned by a pair — agent plus
 session — and a zombie on an old session gets `stale_session` even when the name
 matches. That is fencing, and no separate claim token is needed for it.
 
-**The transport renews the session, not the model.** An LLM agent can only call
-tools between steps: while a ten-minute build runs it sends no heartbeat at all.
-Proof of life therefore comes from a process rather than from reasoning:
+**Two guards, not one.** A task is held while **either** holds: the lease has
+not expired, or the session is still alive.
 
-- the stdio adapter lives exactly as long as its client and renews in the background;
-- over HTTP the session is `Mcp-Session-Id`, renewed by any request on the connection.
+Neither is enough alone. The lease is exactly what a model cannot renew
+mid-step: while a ten-minute build runs it makes no tool calls at all. The
+session is not enough either, because only some transports prove they are alive:
 
-Inside a session a task takes **no time-based lease**: it is held for as long as
-the session lives. When the process dies the session expires after
-`NOTED_SESSION_TTL_S` (90 seconds) and everything it held is released at once.
-That is faster than a five-minute lease and asks nothing of the model.
+- the **stdio adapter** lives exactly as long as its client and renews in the
+  background, with no involvement from the model;
+- an **HTTP client** sends nothing during a long step, so its silence proves
+  nothing.
+
+So a lease is taken on every claim, session or not, and a live session extends
+the hold past it.
+
+Recovery speed follows the same distinction. A silent session on a transport
+that renews by itself means a dead process, so its tasks are released at once,
+within `NOTED_SESSION_TTL_S` (90 seconds). Everywhere else the lease governs:
+an agent on the HTTP transport should ask for a `lease_s` that covers its
+longest step, or call `heartbeat` as it goes.
+
+`lease_s=0` with no session means no expiry at all — an explicit opt-out.
+
+**Session ids are credentials, not identifiers.** A session belongs to one agent
+and nobody else may present its id; a closed session stays closed, or a revoked
+key could pick its tasks back up. For the same reason `session_id` is not part
+of any response: knowing one would be enough to use it.
+
+**There has to be a way in.** A browser cannot send the header agents use, so the
+dashboard signs in with `NOTED_TOKEN` or with an admin key. Issuing the first
+agent key is refused unless one of those exists, or turning identity on would
+leave every human locked out of their own queue.
 
 What identity does not provide: roles and users inside the dashboard. There is
 one door — whoever signs in is an admin.
@@ -125,9 +152,14 @@ in `in_progress`, the only state an executor may report from. A forgotten
 `if_status` no longer breaks invariants in silence (`done` → `pending`,
 `failed` → `done`).
 
-An unconditional write is an explicit `force=true`. That is how a human acts from
-the dashboard: cancelling a task in any state is their right, but it is a
-separate intention rather than a default.
+An unconditional write is an explicit `force=true`, **and it is not available to
+an agent**. Administrators use it — the dashboard, the `NOTED_TOKEN` holder, or a
+key issued with `--admin`. An agent reaching for `force` would walk around
+compare-and-set and unblock the dependants of a task it never held.
+
+Fencing is not optional either. When a task is held by a session, a caller that
+sends a different session — or none at all — is refused with `stale_session`.
+Omitting a header must not be a way around a check.
 
 A move into a terminal status releases the session. Otherwise a human would
 cancel a task and a returning agent would silently overwrite that with `done`.
@@ -144,6 +176,10 @@ cancel a task and a returning agent would silently overwrite that with `done`.
 | a predecessor reached `done` | waiting tasks go `blocked` → `pending` if nothing else is open |
 | a predecessor `failed` or was `cancelled` | waiting tasks go `pending` → `blocked` |
 | a human in the dashboard | any transition, through `force=true` |
+
+Blocking walks the whole chain: if C waits on B and B waits on A, a failure in A
+blocks both. Marking only the direct waiters would leave C in `pending` for
+ever — never handed out, because B is not done, and never visible as blocked.
 
 A task does not leave `blocked` by itself: either a predecessor's success
 unblocks it, or a human or orchestrator moves it. That is deliberate — whether
@@ -329,7 +365,11 @@ with the API address in `message`, rather than a timeout or a traceback.
 
 ### The event stream
 
-`GET /events` is a public contract, not dashboard decoration. Every change
+`GET /events` sits behind the same door as `/api` and `/mcp`: the journal carries
+actors, project names and payload details, and `?after=0` would replay all of it
+to anyone who reached the port.
+
+It is a public contract, not dashboard decoration. Every change
 arrives as a journal entry:
 
 ```

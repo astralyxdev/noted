@@ -107,7 +107,6 @@ def _fields(row: sqlite3.Row) -> dict[str, Any]:
         "max_attempts": row["max_attempts"],
         "retry_after": _iso(row["retry_after"]),
         "lease_expires": _iso(row["lease_expires"]),
-        "session_id": row["session_id"] if "session_id" in row.keys() else None,
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -306,6 +305,17 @@ def last_event_id() -> int:
     return row["last"]
 
 
+def ensure_scope(project: str | None, allowed: Sequence[str] | None) -> None:
+    """A scope decides what may be read, not only what may be written.
+
+    Without this a scoped key could list, read and rewrite another project's
+    tasks — an "enforced" scope that only guards the way into the queue.
+    """
+    if allowed is None or project is None or project in set(allowed):
+        return
+    raise TaskError(Outcome.forbidden, f"project {project} is outside the key's scope")
+
+
 def list_tasks(
     assignee_id: ActorId | None = None,
     status: Status | str | Sequence[Status | str] | None = None,
@@ -315,6 +325,7 @@ def list_tasks(
     parent_id: int | None = None,
     stale_seconds: float | None = None,
     before_id: int | None = None,
+    allowed_projects: Sequence[str] | None = None,
     limit: int = 50,
 ) -> list[TaskSummary]:
     """The list, newest first. No `result` — that is what get() is for.
@@ -330,8 +341,14 @@ def list_tasks(
     if unscoped:
         where.append("project IS NULL")
     elif project is not None:
+        ensure_scope(project, allowed_projects)
         where.append("project = ?")
         args.append(_actor(project, "project"))
+    elif allowed_projects is not None:
+        names = sorted({str(p) for p in allowed_projects})
+        placeholders = ", ".join("?" * len(names)) or "NULL"
+        where.append(f"(project IS NULL OR project IN ({placeholders}))")
+        args.extend(names)
 
     if unassigned:
         where.append("assignee_id IS NULL")
@@ -396,17 +413,35 @@ def _unblock_dependents(conn: sqlite3.Connection, task_id: int, now: float) -> l
 
 
 def _block_dependents(conn: sqlite3.Connection, task_id: int, reason: str, now: float) -> list[int]:
-    """A predecessor failed or was cancelled: its waiters will not move on their own."""
-    rows = conn.execute(
-        "SELECT t.id FROM tasks t JOIN task_deps d ON d.task_id = t.id "
-        " WHERE d.depends_on_id = ? AND t.status = 'pending'",
-        (task_id,),
-    ).fetchall()
-    blocked = [r["id"] for r in rows]
-    for dependent in blocked:
-        conn.execute("UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ?", (now, dependent))
-        _log(conn, dependent, "blocked", actor="system", from_status="pending",
-             to_status="blocked", detail={"because": task_id, "reason": reason}, at=now)
+    """A predecessor failed or was cancelled: its waiters will not move on their own.
+
+    Blocking walks the whole chain. Marking only the direct waiters would leave
+    everything behind them sitting in `pending` for ever: never handed out,
+    because a predecessor is not done, and never visible as blocked either.
+    """
+    blocked: list[int] = []
+    frontier = [task_id]
+    seen = {task_id}
+
+    while frontier:
+        current = frontier.pop()
+        rows = conn.execute(
+            "SELECT t.id FROM tasks t JOIN task_deps d ON d.task_id = t.id "
+            " WHERE d.depends_on_id = ? AND t.status = 'pending'",
+            (current,),
+        ).fetchall()
+        for row in rows:
+            dependent = row["id"]
+            if dependent in seen:
+                continue
+            seen.add(dependent)
+            conn.execute("UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ?", (now, dependent))
+            _log(conn, dependent, "blocked", actor="system", from_status="pending",
+                 to_status="blocked",
+                 detail={"because": current, "reason": reason if current == task_id else "predecessor blocked"},
+                 at=now)
+            blocked.append(dependent)
+            frontier.append(dependent)
     return blocked
 
 
@@ -417,6 +452,7 @@ def set_status(
     if_status: Status | str | None = None,
     actor: ActorId | None = None,
     session_id: str | None = None,
+    strict_session: bool = False,
     force: bool = False,
 ) -> tuple[Outcome, Task | None]:
     """Change the status, optionally attaching a result.
@@ -455,8 +491,10 @@ def set_status(
         if who is not None and row["status"] == Status.in_progress.value and row["assignee_id"] not in (None, who):
             return Outcome.not_owner, _task(conn, row)
         # Fencing: a task is held by one instance of an agent, not by its name.
-        # A zombie on an old session is refused even when the name matches.
-        if session_id is not None and row["session_id"] is not None and row["session_id"] != session_id:
+        # A zombie on an old session is refused even when the name matches — and
+        # so is a caller that sent no session at all, or dropping the header
+        # would be all it took to walk around the check.
+        if strict_session and row["session_id"] is not None and row["session_id"] != session_id:
             return Outcome.stale_session, _task(conn, row)
 
         now = time.time()
@@ -472,6 +510,7 @@ def set_status(
                 """
                 UPDATE tasks
                    SET status = 'pending', assignee_id = NULL, lease_expires = NULL,
+                       session_id = NULL,
                        retry_after = ?, result = COALESCE(?, result), updated_at = ?
                  WHERE id = ?
                 """,
@@ -525,21 +564,24 @@ def claim(
     Never handed out: tasks still inside their post-failure pause, and tasks
     whose dependencies are not closed.
 
-    `lease_s` is the lease length. When it expires the task returns to the
-    queue on its own unless the executor renewed it. `lease_s=0` means none.
+    `lease_s` is the lease length, and it is taken even inside a session.
+    A task is held while **either** guard holds: the lease has not expired, or
+    the session is still alive. Both are needed.
 
-    Inside a session no lease is set at all: the task is held for as long as
-    the session lives. That lifts heartbeats off the model, which cannot renew
-    anything while a ten-minute build runs, and puts them on the transport,
-    which is a separate living process.
+    The session alone is not enough because only some transports prove they are
+    alive: the stdio adapter renews in the background, while an HTTP client
+    sends nothing at all during a ten-minute build. Relying on the session there
+    would hand the task to a second agent after ninety seconds of silence. The
+    lease alone is not enough either, because it is exactly what the model
+    cannot renew mid-step. Together they cover both.
+
+    `lease_s=0` with no session means no expiry at all — an explicit opt-out.
     """
     assignee = _actor(assignee_id, "assignee_id")
     if assignee is None:
         raise TaskError(Outcome.validation_error, "assignee_id is required to claim a task")
     scope = _actor(project, "project")
-    # Inside a session no lease is needed: the session holds it, and the
-    # transport is what renews the session.
-    lease = (float(lease_s) if lease_s is not None else 0.0) if session_id else _lease(lease_s)
+    lease = _lease(lease_s)
     now = time.time()
 
     allowed = sorted({str(p) for p in allowed_projects}) if allowed_projects is not None else None
@@ -600,6 +642,7 @@ def heartbeat(
     assignee_id: ActorId,
     lease_s: float | None = None,
     session_id: str | None = None,
+    strict_session: bool = False,
 ) -> tuple[Outcome, Task | None]:
     """Extend the lease: the executor says "I am alive and still on this task".
 
@@ -619,7 +662,7 @@ def heartbeat(
             return Outcome.status_conflict, _task(conn, row)
         if row["assignee_id"] != who:
             return Outcome.not_owner, _task(conn, row)
-        if session_id is not None and row["session_id"] is not None and row["session_id"] != session_id:
+        if strict_session and row["session_id"] is not None and row["session_id"] != session_id:
             return Outcome.stale_session, _task(conn, row)
 
         conn.execute(
@@ -650,10 +693,20 @@ def reap_expired() -> list[int]:
               LEFT JOIN agent_sessions s ON s.id = t.session_id
              WHERE t.status = 'in_progress'
                AND (
-                     (t.lease_expires IS NOT NULL AND t.lease_expires <= :now)
-                     -- The session died: release everything it held at once.
-                     OR (t.session_id IS NOT NULL
-                         AND (s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale))
+                     -- A transport that renews by itself has gone quiet: that is
+                     -- a dead process, not a busy one, so release immediately
+                     -- instead of waiting out the lease.
+                     (t.session_id IS NOT NULL AND s.transport = 'stdio'
+                      AND (s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale))
+                     OR (
+                       -- Otherwise both guards must be gone. Something has to
+                       -- govern the hold: a task with neither a lease nor a
+                       -- session was claimed with an explicit opt-out.
+                       (t.lease_expires IS NOT NULL OR t.session_id IS NOT NULL)
+                       AND (t.lease_expires IS NULL OR t.lease_expires <= :now)
+                       AND (t.session_id IS NULL
+                            OR s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale)
+                     )
                    )
             """,
             {"now": now, "stale": now - ttl},

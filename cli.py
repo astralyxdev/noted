@@ -25,6 +25,10 @@ def _add(args: argparse.Namespace) -> int:
     print("The key is never shown again. Hand it to the agent:")
     print("  claude mcp add --transport http noted http://127.0.0.1:8787/mcp/ \\")
     print(f'      --header "X-Noted-Token: {issued.key}"')
+    print()
+    print("For long steps prefer the stdio adapter: it renews the session while the")
+    print("model is busy, so a ten-minute build cannot lose the task.")
+    print(f"  claude mcp add noted --env NOTED_KEY={issued.key} -- noted-mcp")
     return 0
 
 

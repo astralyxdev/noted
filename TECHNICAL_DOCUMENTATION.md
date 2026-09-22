@@ -203,17 +203,34 @@ issued secret of 256 random bits, there is nothing to guess, and a slow KDF is
 not needed. `identity_required()` counts revoked keys too — otherwise revoking
 the last key would silently reopen the queue to everyone.
 
-**Sessions.** A task is held by a session rather than by a timer: with a session
-present `claim` sets no lease at all. The session is renewed by the transport
-(the stdio adapter's background task, or any request carrying `Mcp-Session-Id`),
-so the model is not responsible for "I am alive" — it cannot be, while a
-ten-minute build runs. The owner of a task is the pair agent-plus-session, which
-gives fencing without a separate claim token.
+**Sessions.** A task is held while either guard holds — the lease has not
+expired, or the session is alive — and a lease is taken on every claim. Only
+some transports prove liveness: the stdio adapter renews in the background, so
+its silence means a dead process and releases the task at once, while an HTTP
+client sends nothing during a long step and its silence proves nothing. Getting
+this wrong in either direction costs something real: session-only would hand an
+HTTP agent's task away after ninety seconds of quiet, lease-only would take it
+away mid-build.
+
+Going quiet does not close a session. Liveness is read from `renewed_at`;
+`closed_at` means a deliberate end (logout, a revoked key). Closing on silence
+would lock a live client out for ever, because it keeps presenting the same id.
+
+A session belongs to one agent and its id is never published: ids travel in
+headers, and knowing one would otherwise be enough to use it. The owner of a
+task is the pair agent-plus-session, which gives fencing without a separate
+claim token — and the check runs whenever the caller is an agent, so omitting
+the header is not a way around it.
 
 **Compare-and-set by default.** `set_status` without `if_status` fills in
-`in_progress`. An unconditional write is `force`, and a move into a terminal
-status releases the session — otherwise a late agent would overwrite a human's
-cancellation with its own `done`.
+`in_progress`. An unconditional write is `force`, refused to agents and left to
+administrators, and a move into a terminal status releases the session —
+otherwise a late agent would overwrite a human's cancellation with its own `done`.
+
+**Scope on reads.** `ensure_scope` and `allowed_projects` run on listing,
+reading, the journal and every write. A scope enforced only on the way into the
+queue would be advisory: a scoped key could still read and rewrite another
+project's work.
 
 **Dependencies.** Dispatch filters on a `NOT EXISTS (... p.status <> 'done')`
 subquery, so "ready to be handed out" is never stored and cannot fall out of
@@ -455,6 +472,17 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | The lease collector dies quietly | the exception is logged and the loop continues |
 | An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |
 | An agent takes another's name | `assignee_id` and `created_by` follow from the key |
+| A scoped key reads or rewrites another project | scope checked on list, read, journal and write |
+| An agent reaches for `force` | refused unless the caller is an administrator |
+| Fencing skipped by omitting a header | the session check runs for every agent call |
+| A session id is presented by another agent | sessions are bound to one agent; ids are not published |
+| A quiet client is locked out for ever | silence makes a session stale, not closed |
+| A revoked key revives its session | a deliberately closed session stays closed |
+| The event stream leaks the journal | `/events` sits behind the same door as `/api` |
+| Identity turned on with no way into the dashboard | the first key needs `NOTED_TOKEN` or an admin key |
+| A chain of dependants hides in `pending` | blocking walks the whole chain |
+| A retried task keeps a stale session | the retry path clears it |
+| Every request writes to renew a session | renewal touches the row once per third of the TTL |
 | Two processes with one key are indistinguishable | the owner is agent-plus-session; fencing by session |
 | The model cannot heartbeat during a long step | the transport renews the session, not the model |
 | A forgotten `if_status` breaks invariants | CAS by default; an unconditional write is an explicit `force` |

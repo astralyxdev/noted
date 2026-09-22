@@ -81,11 +81,31 @@ def _session(row: sqlite3.Row) -> AgentSession:
 # ──────────────────────────────── keys ───────────────────────────────────
 
 
+def admin_exists() -> bool:
+    """Is there any way left to reach the dashboard?
+
+    A browser cannot send the header agents use, so the dashboard signs in with
+    NOTED_TOKEN or an admin key. Without either, turning identity on would lock
+    every human out of their own queue.
+    """
+    if settings.admin_token():
+        return True
+    with database.reading() as conn:
+        row = conn.execute("SELECT 1 FROM agents WHERE is_admin = 1 AND revoked_at IS NULL LIMIT 1").fetchone()
+    return row is not None
+
+
 def issue(name: str, projects: Sequence[str] | None = None, is_admin: bool = False) -> IssuedKey:
     """Register an agent and issue its key. The key is returned once."""
     agent_id = (name or "").strip()
     if not agent_id:
         raise AgentError(Outcome.validation_error, "an agent name must not be empty")
+    if not is_admin and not admin_exists():
+        raise AgentError(
+            Outcome.validation_error,
+            "issuing this key would turn identity on and lock the dashboard out. "
+            "Set NOTED_TOKEN, or issue an admin key first: noted-keys add <name> --admin",
+        )
     scope = sorted({p.strip() for p in (projects or []) if p.strip()}) or None
     key = KEY_PREFIX + secrets.token_urlsafe(32)
     now = time.time()
@@ -164,23 +184,50 @@ def open_session(agent_id: str, transport: str | None = None) -> AgentSession:
     return _session(row)
 
 
-def ensure_session(session_id: str, agent_id: str, transport: str | None = None) -> AgentSession:
-    """A session under a given id. For the MCP transport that id is
-    Mcp-Session-Id: the client's session is the agent's session, and nothing
-    has to be opened by hand."""
+def ensure_session(session_id: str, agent_id: str, transport: str | None = None) -> AgentSession | None:
+    """A session under a given id, or None when the id may not be used.
+
+    For the MCP transport that id is Mcp-Session-Id: the client's session is the
+    agent's session, and nothing has to be opened by hand. Two rules keep that
+    from becoming a hole, because session ids travel in headers and are easy to
+    observe:
+
+    * a session belongs to one agent and nobody else may present its id;
+    * a session that was closed **deliberately** — on logout, or when the key was
+      revoked — stays closed.
+
+    Going quiet is not the same as being closed. An HTTP client sends nothing
+    during a long step, and its session goes stale; refusing it afterwards would
+    lock a live agent out of its own queue for ever, since the client keeps
+    presenting the same id. Staleness costs it the tasks it was holding — the
+    collector takes those — but not the right to carry on working.
+    """
     now = time.time()
-    with database.transaction() as conn:
+    ttl = session_ttl_s()
+
+    with database.reading() as conn:
         row = conn.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,)).fetchone()
-        if row is None:
+
+    if row is not None:
+        if row["agent_id"] != agent_id or row["closed_at"] is not None:
+            return None
+        # Renewal is a write under the global lock, and every request carries a
+        # session. Touch the row only once per third of the TTL.
+        if now - row["renewed_at"] <= ttl / 3:
+            return _session(row)
+
+    with database.transaction() as conn:
+        current = conn.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,)).fetchone()
+        if current is None:
             conn.execute(
                 "INSERT INTO agent_sessions (id, agent_id, transport, opened_at, renewed_at)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (session_id, agent_id, transport, now, now),
             )
+        elif current["agent_id"] != agent_id or current["closed_at"] is not None:
+            return None
         else:
-            conn.execute(
-                "UPDATE agent_sessions SET renewed_at = ?, closed_at = NULL WHERE id = ?", (now, session_id)
-            )
+            conn.execute("UPDATE agent_sessions SET renewed_at = ? WHERE id = ?", (now, session_id))
         return _session(conn.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,)).fetchone())
 
 
@@ -221,17 +268,15 @@ def get_session(session_id: str) -> AgentSession | None:
     return _session(row) if row else None
 
 
-def expire_sessions() -> list[str]:
-    """Close sessions nobody renewed. The collector frees their tasks."""
-    now = time.time()
+def prune_sessions(older_than_days: float = 30.0) -> int:
+    """Drop long-dead session rows. Liveness itself is read from `renewed_at`:
+    a session is not closed for going quiet, or a live client that spent ten
+    minutes on one step could never speak again.
+    """
+    cutoff = time.time() - older_than_days * 86_400
     with database.transaction() as conn:
-        rows = conn.execute(
-            "SELECT id FROM agent_sessions WHERE closed_at IS NULL AND renewed_at <= ?",
-            (now - session_ttl_s(),),
-        ).fetchall()
-        for row in rows:
-            conn.execute("UPDATE agent_sessions SET closed_at = ? WHERE id = ?", (now, row["id"]))
-    return [r["id"] for r in rows]
+        cur = conn.execute("DELETE FROM agent_sessions WHERE renewed_at < ?", (cutoff,))
+        return cur.rowcount
 
 
 def sessions_of(agent_id: str, only_open: bool = True) -> list[AgentSession]:

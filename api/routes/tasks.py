@@ -75,6 +75,7 @@ async def claim_task(request: ClaimRequest, http: Request):
 
 @router.get("/tasks")
 async def list_tasks(
+    http: Request,
     assignee_id: str | None = None,
     status: list[Status] | None = Query(default=None),
     project: str | None = None,
@@ -95,22 +96,33 @@ async def list_tasks(
         parent_id=parent_id,
         stale_seconds=stale_seconds,
         before_id=before_id,
+        allowed_projects=principal_of(http).projects,
         limit=limit,
     )
     return respond(envelope(Outcome.ok, tasks=found, count=len(found)))
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: int):
+async def get_task(task_id: int, http: Request):
     task = await run_service(tasks_service.get, task_id)
     if task is None:
         return respond(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
+    who = principal_of(http)
+    if not who.may_touch(task.project):
+        return respond(envelope(Outcome.forbidden, f"project {task.project} is outside the key's scope", task=None))
     return respond(envelope(Outcome.ok, task=task))
 
 
 @router.patch("/tasks/{task_id}/status")
 async def set_task_status(task_id: int, request: SetStatusRequest, http: Request):
     who = principal_of(http)
+    # force is a human overriding the queue, not an agent that forgot if_status.
+    if request.force and who.agent is not None and not who.is_admin:
+        return respond(envelope(Outcome.forbidden, "force is for administrators", task=None))
+
+    existing = await run_service(tasks_service.get, task_id)
+    if existing is not None and not who.may_touch(existing.project):
+        return respond(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
     outcome, task = await run_service(
         tasks_service.set_status,
         task_id=task_id,
@@ -119,6 +131,7 @@ async def set_task_status(task_id: int, request: SetStatusRequest, http: Request
         if_status=request.if_status,
         actor=who.name or request.assignee_id,
         session_id=who.session_id,
+        strict_session=who.agent is not None and not who.is_admin,
         force=request.force,
     )
     if outcome is Outcome.updated:
@@ -140,14 +153,15 @@ async def set_task_status(task_id: int, request: SetStatusRequest, http: Request
 
 @router.post("/tasks/{task_id}/heartbeat")
 async def heartbeat(task_id: int, request: HeartbeatRequest, http: Request):
-    who = principal_of(http)
     """Extend the lease: the executor is alive and still on this task."""
+    who = principal_of(http)
     outcome, task = await run_service(
         tasks_service.heartbeat,
         task_id=task_id,
         assignee_id=who.name or request.assignee_id,
         lease_s=request.lease_s,
         session_id=who.session_id,
+        strict_session=who.agent is not None and not who.is_admin,
     )
     message = {
         Outcome.not_found: f"task {task_id} does not exist",
@@ -159,11 +173,13 @@ async def heartbeat(task_id: int, request: HeartbeatRequest, http: Request):
 
 
 @router.get("/tasks/{task_id}/events")
-async def get_task_events(task_id: int, limit: int = 200):
+async def get_task_events(task_id: int, http: Request, limit: int = 200):
     """The transition journal of a task: who did what to it, and when."""
     task = await run_service(tasks_service.get, task_id)
     if task is None:
         return respond(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
+    if not principal_of(http).may_touch(task.project):
+        return respond(envelope(Outcome.forbidden, f"project {task.project} is outside the key's scope", task=None))
     log = await run_service(tasks_service.events, task_id, limit)
     return respond(envelope(Outcome.ok, task=task, events=log, count=len(log)))
 
@@ -171,11 +187,19 @@ async def get_task_events(task_id: int, limit: int = 200):
 @router.post("/login")
 async def login(request: LoginRequest, http: Request):
     """The dashboard door. A browser sends no headers, so it gets a cookie."""
+    presented = request.token.strip()
     expected = authorization.admin_token()
-    if not expected:
+
+    # Either the shared admin token, or an admin key issued by noted-keys:
+    # without the second, a queue with identity on and no NOTED_TOKEN would have
+    # no way in at all.
+    by_token = bool(expected) and hmac.compare_digest(presented.encode(), expected.encode())
+    agent = await run_service(agents_service.resolve, presented)
+    by_key = agent is not None and agent.is_admin
+
+    if not expected and not agents_service.identity_required():
         return respond(envelope(Outcome.ok, "no token is set, so no login is needed"))
-    # Compared as bytes: compare_digest refuses non-ASCII strings.
-    if not hmac.compare_digest(request.token.strip().encode(), expected.encode()):
+    if not (by_token or by_key):
         return respond(envelope(Outcome.unauthorized, "wrong token"))
 
     response = respond(envelope(Outcome.ok))

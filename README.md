@@ -23,10 +23,10 @@ the same task. Noted solves that, and a few things that follow from it:
 
 - **Claiming is atomic.** However many agents take work at the same moment,
   every task goes to exactly one of them.
-- **A crashed agent does not hold work.** A task belongs to a session, and the
-  transport renews that session rather than the model, so a ten-minute build is
-  no problem. When the process dies, everything it held is released at once,
-  within ninety seconds. Not "you can see it is stuck" but "it fixed itself".
+- **A crashed agent does not hold work.** A task is held by a lease and by a
+  session, and the transport renews the session rather than the model, so a
+  ten-minute build is no problem. When the process dies its work comes back by
+  itself. Not "you can see it is stuck" but "it fixed itself".
 - **Failures retry with a pause.** `max_attempts` returns a task to the queue
   with a growing backoff; when attempts run out it stays `failed` — that is the
   dead letter.
@@ -112,8 +112,13 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/ \
 ```
 
 With a key the server fills in `assignee_id` and `created_by` itself: taking
-another's name is not possible. The project scope is enforced — a scoped agent
-neither sees nor claims a foreign task.
+another's name is not possible. The project scope is enforced on reading as well
+as writing — a scoped agent cannot list, read, claim or modify a foreign task.
+`force` is refused to agents: it belongs to administrators.
+
+The first key cannot be issued unless there is already a way into the dashboard —
+`NOTED_TOKEN`, or a key created with `--admin`. Otherwise turning identity on
+would lock every human out.
 
 For the stdio transport the key comes from `NOTED_KEY`:
 
@@ -125,13 +130,16 @@ claude mcp add noted -- docker run -i --rm \
 ### Sessions instead of heartbeats
 
 An LLM agent can only call tools between steps: while a ten-minute build runs it
-sends no heartbeat at all. So proof of life comes from the process rather than
-from the reasoning — the stdio adapter renews its session in the background, and
-over HTTP the session is the `Mcp-Session-Id` the client already sends.
+sends no heartbeat at all. So a task is held while **either** guard holds — the
+lease has not expired, or the session is still alive.
 
-Inside a session a task takes no time-based lease: it is held for as long as the
-agent's process lives. When it dies the session expires after `NOTED_SESSION_TTL_S`
-(90 s) and every task it held returns to the queue.
+The stdio adapter renews its session in the background, with no involvement from
+the model, so work of any length is safe and a dead process gives its tasks back
+within `NOTED_SESSION_TTL_S` (90 s). An HTTP client sends nothing during a long
+step, so its silence proves nothing and the lease is what governs: ask for a
+`lease_s` that covers your longest step, or call `heartbeat` as you go.
+
+That is the one reason to prefer the stdio adapter over the HTTP transport.
 
 That makes the executor loop short:
 
@@ -171,7 +179,7 @@ decides what to do next by it:
 | `not_found` · `parent_not_found` | false | 404 | no such task · no such parent |
 | `status_conflict` | false | 409 | `if_status` did not match, or the task is in another state |
 | `not_owner` | false | 409 | the task is held by another executor |
-| `stale_session` | false | 409 | another instance of the same agent holds it |
+| `stale_session` | false | 409 | another instance holds it, or no session was sent |
 | `forbidden` | false | 403 | the project is outside the key's scope |
 | `validation_error` | false | 422 | malformed input |
 | `unauthorized` | false | 401 | `NOTED_TOKEN` is set and the header did not match |
@@ -203,9 +211,11 @@ dependencies and tasks of other projects are never handed out. Starvation is
 possible and deliberate: a stream of high-priority work can hold off the
 low-priority indefinitely, and there is no priority ageing in the core.
 
-**A lease** is taken on claim. It is renewed by `heartbeat`, and on expiry the
-task returns to the shared pool (or goes to `failed` when attempts are gone).
-`lease_s=0` takes none. Inside a session no lease is set at all.
+**A lease** is taken on every claim, session or not. It is renewed by
+`heartbeat`, and a task is released only when both guards are gone: the lease has
+expired and no live session holds it. A silent session on a transport that
+renews by itself is treated as a dead process and releases its tasks at once.
+`lease_s=0` with no session means no expiry.
 
 **Retries**: `max_attempts` turns a failure into a return to the queue with an
 exponential pause. Exhausted attempts leave the task `failed`.
@@ -236,7 +246,7 @@ it missed. Integrations are built on that rather than on polling.
 | `POST` | `/api/tasks/{id}/heartbeat` | extend the lease |
 | `GET` | `/api/tasks/{id}/events` | the transition journal of a task |
 | `GET` | `/api/stats` | counters, plus the project and assignee lists |
-| `GET` | `/events` | the SSE stream of changes |
+| `GET` | `/events` | the SSE stream of changes (behind the same door as `/api`) |
 | `POST` | `/api/sessions/renew` | session renewal by the transport |
 | `POST` | `/api/login` · `/api/logout` | the dashboard door |
 | `POST`/`GET` | `/mcp/` | MCP over the streamable-http transport |

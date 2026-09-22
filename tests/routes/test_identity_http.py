@@ -9,7 +9,8 @@ from api.services import tasks as service
 
 
 @pytest.fixture
-def key():
+def key(monkeypatch):
+    monkeypatch.setenv("NOTED_TOKEN", "admin-secret")
     return agents.issue("agent-1", projects=["noted"]).key
 
 
@@ -53,11 +54,9 @@ def test_revoked_key_stops_working(live_server, key):
         assert client.get("/api/tasks").status_code == 401
 
 
-def test_transport_session_holds_the_task_without_any_lease(live_server, key):
-    """The transport session is the agent session: no time-based lease needed.
-
-    An MCP client sends Mcp-Session-Id by itself; here the same header is set
-    by hand, because what is under test is the server, not the SDK client.
+def test_an_http_session_still_takes_a_lease(live_server, key):
+    """An HTTP client sends nothing during a long step, so the lease stays on:
+    a session alone would hand its task away after ninety seconds of silence.
     """
     service.create({"title": "long build"}, project="noted")
 
@@ -66,8 +65,8 @@ def test_transport_session_holds_the_task_without_any_lease(live_server, key):
         claimed = client.post("/api/tasks/claim", json={"assignee_id": "agent-1"}).json()
 
     assert claimed["outcome"] == "claimed"
-    assert claimed["task"]["lease_expires"] is None, "held by the session, not a timer"
-    assert claimed["task"]["session_id"] == "session-of-a-live-process"
+    assert claimed["task"]["lease_expires"] is not None
+    assert "session_id" not in claimed["task"], "a session id is not published; knowing one is enough to use it"
 
     # While the session lives the collector leaves the task alone.
     assert service.reap_expired() == []
@@ -91,10 +90,8 @@ def test_a_second_instance_of_the_same_agent_cannot_write(live_server, key):
         assert owner.json()["outcome"] == "updated"
 
 
-def test_dashboard_has_its_own_door(live_server, key, monkeypatch):
+def test_dashboard_has_its_own_door(live_server, key):
     """A browser sends no headers, so the dashboard gets a door and a cookie."""
-    monkeypatch.setenv("NOTED_TOKEN", "admin-secret")
-
     with httpx.Client(base_url=live_server, timeout=10) as browser:
         assert browser.get("/api/tasks").status_code == 401
 

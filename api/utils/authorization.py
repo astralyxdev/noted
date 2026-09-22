@@ -22,10 +22,14 @@ from api.services import agents
 
 HEADER = "X-Noted-Token"
 SESSION_HEADER = "X-Noted-Session"
+TRANSPORT_HEADER = "X-Noted-Transport"
+
 #: The MCP transport sends its own client session id, and that is the agent session.
 MCP_SESSION_HEADER = "Mcp-Session-Id"
 
-GUARDED = ("/api", "/mcp")
+#: /events carries the whole journal — actors, projects, payload details —
+#: so it sits behind the same door as the API.
+GUARDED = ("/api", "/mcp", "/events")
 EXEMPT = ("/healthz", "/api/login")
 
 COOKIE = "noted_admin"
@@ -50,7 +54,11 @@ class Principal:
 
     @property
     def projects(self) -> list[str] | None:
+        """None means every project. An open queue has no scope either."""
         return self.agent.projects if self.agent else None
+
+    def may_touch(self, project: str | None) -> bool:
+        return self.agent.may_touch(project) if self.agent else True
 
 
 ANONYMOUS = Principal()
@@ -60,7 +68,11 @@ def admin_token() -> str | None:
     return settings.admin_token()
 
 
-def from_headers(headers: Mapping[str, str] | None, transport: str = "http") -> Principal | None:
+def from_headers(
+    headers: Mapping[str, str] | None,
+    transport: str = "http",
+    renew: bool = True,
+) -> Principal | None:
     """Headers to principal. None means refusal.
 
     One function for both transports: the middleware calls it for an HTTP
@@ -78,10 +90,13 @@ def from_headers(headers: Mapping[str, str] | None, transport: str = "http") -> 
 
     agent = agents.resolve(presented) if presented else None
     if agent is not None:
-        if session_id:
+        if session_id and renew:
             # A live transport means a live agent. The model never thinks about it.
-            agents.ensure_session(session_id, agent.id, transport)
-        return Principal(agent=agent, session_id=session_id or None)
+            session = agents.ensure_session(session_id, agent.id, transport)
+            if session is None:
+                # Somebody else's session id, or one that was already closed.
+                return None
+        return Principal(agent=agent, session_id=session_id or None, is_admin=agent.is_admin)
 
     if expected or agents.identity_required():
         return None
@@ -119,8 +134,21 @@ def _browser_admin(request: Request) -> bool:
     return True
 
 
+def transport_of(headers: Mapping[str, str] | None, path: str) -> str:
+    """Which transport this call arrived on.
+
+    Only a transport that renews the session by itself may be trusted to prove
+    death by silence: the stdio adapter runs a keepalive loop, while an HTTP
+    client sends nothing at all during a long step.
+    """
+    declared = {k.lower(): v for k, v in (headers or {}).items()}.get(TRANSPORT_HEADER.lower())
+    if declared and declared.strip() == "stdio":
+        return "stdio"
+    return "http-mcp" if path.startswith("/mcp") else "http"
+
+
 def resolve(request: Request) -> Principal | JSONResponse:
-    transport = "http-mcp" if request.url.path.startswith("/mcp") else "http"
+    transport = transport_of(request.headers, request.url.path)
     who = from_headers(request.headers, transport)
     if who is not None:
         return who

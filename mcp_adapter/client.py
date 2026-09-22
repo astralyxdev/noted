@@ -17,6 +17,9 @@ from api import settings
 REQUEST_TIMEOUT = 10.0
 TOKEN_HEADER = "X-Noted-Token"
 SESSION_HEADER = "X-Noted-Session"
+#: Says this transport renews the session by itself, so a silent session means
+#: a dead process rather than a busy one.
+TRANSPORT_HEADER = "X-Noted-Transport"
 
 #: This process's session. The adapter lives exactly as long as its client, so
 #: its life is the agent's proof of life — the model never thinks about it.
@@ -29,7 +32,7 @@ def api_url() -> str:
 
 def _headers() -> dict[str, str]:
     token = settings.agent_key()
-    headers = {SESSION_HEADER: SESSION_ID}
+    headers = {SESSION_HEADER: SESSION_ID, TRANSPORT_HEADER: "stdio"}
     if token:
         headers[TOKEN_HEADER] = token
     return headers
