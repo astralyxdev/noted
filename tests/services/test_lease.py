@@ -79,3 +79,11 @@ def test_foreign_agent_cannot_close_someone_elses_work():
     outcome, done = service.set_status(task.id, "done", actor="agent-1")
     assert outcome is Outcome.updated
     assert done.status.value == "done"
+
+
+def test_claim_without_lease_s_still_takes_a_lease():
+    """Аренда включена по умолчанию — это и есть смысл роя, но об этом надо знать:
+    агент, работающий дольше срока и молчащий, потеряет задачу."""
+    service.create({"title": "наивный агент"})
+    taken = service.claim("agent-naive")
+    assert taken.lease_expires is not None, "по умолчанию задача берётся в аренду, а не навсегда"
