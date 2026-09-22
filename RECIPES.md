@@ -128,10 +128,17 @@ In production replace `&` with a systemd unit or `docker compose --scale`, so a
 crashed agent comes back by itself. The session of a dead process expires and
 its tasks return to the queue without your involvement.
 
-Prefer the stdio adapter for work of this shape. It renews its session in the
-background while the model is busy, so a long step cannot lose the task; over
-the HTTP transport nothing is sent during that step, and only `lease_s` (or an
-explicit `heartbeat`) keeps the task from being handed to somebody else.
+For work of this shape, ask for a `lease_s` that covers your longest step, or
+call `heartbeat` between steps. Nothing is sent while the model is busy, so the
+lease is the only thing standing between a long step and somebody else taking
+the task.
+
+A supervisor can do better, and this loop is already one. Renew the session
+yourself — `POST /api/sessions/renew` with the session header, on a timer — and
+declare it with `X-Noted-Transport: self-renewing`. Then your silence means the
+process is dead rather than busy, and the core releases the tasks you were
+holding within `NOTED_SESSION_TTL_S` instead of waiting out the lease. The model
+never has to think about being alive; the wrapper around it does.
 
 ## Integrations: events instead of polling
 

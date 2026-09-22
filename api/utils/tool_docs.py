@@ -1,7 +1,7 @@
 """MCP tool descriptions — one source for both transports.
 
 The model reads these texts, and they are the API documentation an agent gets.
-They live in one place so the in-core HTTP server and the stdio adapter cannot
+They live in one place so the tools and the JSON API cannot
 drift apart.
 """
 
@@ -84,9 +84,10 @@ The other side of that: work past the lease in silence and another agent takes
 the task, with both of you doing it. So either call heartbeat as you go or ask
 for a lease that covers the worst case. lease_s=0 takes no lease at all.
 
-When your transport keeps a session (the stdio adapter, or an HTTP client
-sending Mcp-Session-Id), no lease is set: the task is held for as long as your
-process lives, and heartbeats stop being your concern.
+A session is a second guard, not a replacement for the lease. When your client
+sends Mcp-Session-Id the task is held while *either* the lease has not expired
+*or* the session is still alive — so a lease you let run out is not on its own
+enough to lose the task, and neither is a quiet spell.
 Outcomes: claimed, empty."""
 
 HEARTBEAT = """Extend a task's lease: "I am alive and still working on it".

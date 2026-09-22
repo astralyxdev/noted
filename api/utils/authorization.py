@@ -16,7 +16,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from api import settings
-from api.models.agent import Agent
+from api.models.agent import SELF_RENEWING, Agent
 from api.models.envelope import HTTP_STATUS, Outcome, body, envelope
 from api.services import agents
 
@@ -135,15 +135,18 @@ def _browser_admin(request: Request) -> bool:
 
 
 def transport_of(headers: Mapping[str, str] | None, path: str) -> str:
-    """Which transport this call arrived on.
+    """Which kind of client this call arrived from.
 
-    Only a transport that renews the session by itself may be trusted to prove
-    death by silence: the stdio adapter runs a keepalive loop, while an HTTP
-    client sends nothing at all during a long step.
+    Only a client that renews the session by itself may be trusted to prove
+    death by silence. A plain MCP or API client sends nothing during a long
+    step, so going quiet says nothing about whether it is alive, and the lease
+    is what governs its hold. A supervisor that renews in the background can
+    say so with `X-Noted-Transport: self-renewing` and get its tasks released
+    the moment it dies.
     """
     declared = {k.lower(): v for k, v in (headers or {}).items()}.get(TRANSPORT_HEADER.lower())
-    if declared and declared.strip() == "stdio":
-        return "stdio"
+    if declared and declared.strip() == SELF_RENEWING:
+        return SELF_RENEWING
     return "http-mcp" if path.startswith("/mcp") else "http"
 
 

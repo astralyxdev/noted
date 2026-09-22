@@ -7,6 +7,7 @@ import time
 import pytest
 
 from api.models.envelope import Outcome
+from api.models.agent import SELF_RENEWING
 from api.services import agents
 from api.services import tasks as service
 from api.services.agents import AgentError
@@ -71,8 +72,8 @@ def test_scoped_claim_never_reaches_a_foreign_project():
 def test_zombie_with_an_old_session_cannot_write():
     """The same key can run twice. A task is held by an instance, not a name."""
     task, _ = service.create({"title": "contested"})
-    first = agents.open_session("agent-1", "stdio")
-    second = agents.open_session("agent-1", "stdio")
+    first = agents.open_session("agent-1", SELF_RENEWING)
+    second = agents.open_session("agent-1", SELF_RENEWING)
 
     service.claim("agent-1", session_id=first.id)
 
@@ -92,7 +93,7 @@ def test_dead_session_frees_everything_it_held_at_once(monkeypatch):
     for n in range(3):
         service.create({"n": n})
 
-    session = agents.open_session("agent-1", "stdio")
+    session = agents.open_session("agent-1", SELF_RENEWING)
     held = [service.claim("agent-1", session_id=session.id).id for _ in range(3)]
     assert all(service.get(i).status.value == "in_progress" for i in held)
 
@@ -103,7 +104,7 @@ def test_dead_session_frees_everything_it_held_at_once(monkeypatch):
         assert service.get(task_id).status.value == "pending"
 
     # The freed task carries no session, so the next holder is not fenced out.
-    fresh = agents.open_session("agent-2", "stdio")
+    fresh = agents.open_session("agent-2", SELF_RENEWING)
     taken = service.claim("agent-2", session_id=fresh.id)
     assert taken.id in held
     outcome, _ = service.set_status(taken.id, "done", actor="agent-2", session_id=fresh.id, strict_session=True)
@@ -118,7 +119,7 @@ def test_a_live_session_holds_the_task_past_its_lease():
     session alone would hand an HTTP client's task away after ninety seconds of
     silence."""
     service.create({"title": "long build"})
-    session = agents.open_session("agent-1", "stdio")
+    session = agents.open_session("agent-1", SELF_RENEWING)
 
     taken = service.claim("agent-1", session_id=session.id, lease_s=0.01)
     assert taken.lease_expires is not None, "a lease is taken inside a session too"
@@ -129,11 +130,11 @@ def test_a_live_session_holds_the_task_past_its_lease():
 
 
 def test_a_silent_keepalive_session_releases_the_task_at_once(monkeypatch):
-    """The stdio adapter renews in the background, so silence there means a dead
+    """A self-renewing client renews in the background, so silence means a dead
     process rather than a busy one — no reason to wait out the lease."""
     monkeypatch.setenv("NOTED_SESSION_TTL_S", "0.05")
     task, _ = service.create({"title": "abandoned"})
-    session = agents.open_session("agent-1", "stdio")
+    session = agents.open_session("agent-1", SELF_RENEWING)
     service.claim("agent-1", session_id=session.id, lease_s=600)
 
     time.sleep(0.1)

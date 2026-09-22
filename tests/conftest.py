@@ -26,7 +26,6 @@ sqlite_only = pytest.mark.skipif(bool(TEST_DB_URL), reason="SQLite-specific")
 def temp_db(tmp_path, monkeypatch):
     """A fresh database and clean Conditions per test, so tests never see each other."""
     monkeypatch.delenv("NOTED_TOKEN", raising=False)
-    monkeypatch.delenv("NOTED_KEY", raising=False)
     if TEST_DB_URL:
         # The pool is kept between tests and the tables are emptied instead:
         # reconnecting per test costs more than the whole suite.
@@ -62,7 +61,7 @@ def live_server(monkeypatch):
     """A real uvicorn on its own port.
 
     Needed wherever the in-memory ASGI transport will not do: streaming
-    responses (SSE) and the adapter, which must speak real HTTP.
+    responses (SSE), and the MCP client, which must speak real HTTP.
     """
     port = free_port()
     server = uvicorn.Server(uvicorn.Config(app_factory, factory=True, host="127.0.0.1", port=port, log_level="warning"))
@@ -80,7 +79,6 @@ def live_server(monkeypatch):
     else:
         raise RuntimeError("the core did not come up")
 
-    monkeypatch.setenv("NOTED_API", base)
     yield base
     server.should_exit = True
     thread.join(timeout=10)

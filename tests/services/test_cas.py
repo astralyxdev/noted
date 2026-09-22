@@ -56,10 +56,11 @@ def test_explicit_if_status_still_wins():
 
 def test_finishing_releases_the_session_so_latecomers_cannot_overwrite():
     """A human cancelled the task; a returning agent must not overwrite that."""
+    from api.models.agent import SELF_RENEWING
     from api.services import agents
 
     task, _ = service.create({"title": "contested"})
-    session = agents.open_session("agent-1", "stdio")
+    session = agents.open_session("agent-1", SELF_RENEWING)
     service.claim("agent-1", session_id=session.id)
 
     service.set_status(task.id, "cancelled", force=True)

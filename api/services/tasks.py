@@ -20,6 +20,7 @@ from typing import Any, Sequence
 
 from api import settings
 from api.models import database
+from api.models.agent import SELF_RENEWING
 from api.models.envelope import Outcome
 from api.services import agents
 from api.models.task import (
@@ -581,12 +582,11 @@ def claim(
     A task is held while **either** guard holds: the lease has not expired, or
     the session is still alive. Both are needed.
 
-    The session alone is not enough because only some transports prove they are
-    alive: the stdio adapter renews in the background, while an HTTP client
-    sends nothing at all during a ten-minute build. Relying on the session there
-    would hand the task to a second agent after ninety seconds of silence. The
-    lease alone is not enough either, because it is exactly what the model
-    cannot renew mid-step. Together they cover both.
+    The session alone is not enough because only some clients prove they are
+    alive: an MCP client sends nothing at all during a ten-minute build, so
+    relying on the session there would hand the task to a second agent after
+    ninety seconds of silence. The lease alone is not enough either, because it
+    is exactly what the model cannot renew mid-step. Together they cover both.
 
     `lease_s=0` with no session means no expiry at all — an explicit opt-out.
     """
@@ -713,10 +713,10 @@ def reap_expired() -> list[int]:
               LEFT JOIN agent_sessions s ON s.id = t.session_id
              WHERE t.status = 'in_progress'
                AND (
-                     -- A transport that renews by itself has gone quiet: that is
+                     -- A client that renews by itself has gone quiet: that is
                      -- a dead process, not a busy one, so release immediately
                      -- instead of waiting out the lease.
-                     (t.session_id IS NOT NULL AND s.transport = 'stdio'
+                     (t.session_id IS NOT NULL AND s.transport = :self_renewing
                       AND (s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale))
                      OR (
                        -- Otherwise both guards must be gone. Something has to
@@ -730,7 +730,7 @@ def reap_expired() -> list[int]:
                    )
             {claim_lock}
             """.format(claim_lock=database.claim_lock().replace(" FOR UPDATE", " FOR UPDATE OF t")),
-            {"now": now, "stale": now - ttl},
+            {"now": now, "stale": now - ttl, "self_renewing": SELF_RENEWING},
         ).fetchall()
 
         for row in rows:

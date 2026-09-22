@@ -1,10 +1,9 @@
-"""MCP over HTTP — on the same port as the API.
+"""MCP over HTTP — on the same port as the API, at /mcp.
 
-The streamable-http transport instead of stdio: the core already listens on a
-port, so an agent needs no separate adapter process. The tools call the same
+The only transport. The core already listens on a port, so an agent needs no
+adapter process of its own: it points a streamable-http MCP client at
+http://host:port/mcp/ and that is the whole setup. The tools call the same
 services the JSON routes do rather than looping back over HTTP.
-
-The stdio adapter stays in `mcp_adapter/` for clients that cannot speak HTTP.
 """
 
 from __future__ import annotations

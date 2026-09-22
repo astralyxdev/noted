@@ -15,7 +15,7 @@ brings up PostgreSQL; the image on its own falls back to SQLite.
 ```
 agents ──────── MCP over HTTP (/mcp) ───────>┌──────────────────────────────┐
                                              │           FastAPI            │
-agents ─MCP(stdio)─> adapter ──HTTP─────────>│ API · MCP · SSE · dashboard  │
+scripts ─────── JSON API (/api) ────────────>│ API · MCP · SSE · dashboard  │
                                              │                              │
 browser ──── static + /api + SSE ───────────>└───────────────┬──────────────┘
                                                              │
@@ -135,26 +135,21 @@ The first key cannot be issued unless there is already a way into the dashboard 
 `NOTED_TOKEN`, or a key created with `--admin`. Otherwise turning identity on
 would lock every human out.
 
-For the stdio transport the key comes from `NOTED_KEY`:
-
-```bash
-claude mcp add noted -- docker run -i --rm \
-    -e NOTED_API=http://host.docker.internal:8787 -e NOTED_KEY=noted_… noted noted-mcp
-```
-
 ### Sessions instead of heartbeats
 
 An LLM agent can only call tools between steps: while a ten-minute build runs it
 sends no heartbeat at all. So a task is held while **either** guard holds — the
 lease has not expired, or the session is still alive.
 
-The stdio adapter renews its session in the background, with no involvement from
-the model, so work of any length is safe and a dead process gives its tasks back
-within `NOTED_SESSION_TTL_S` (90 s). An HTTP client sends nothing during a long
-step, so its silence proves nothing and the lease is what governs: ask for a
-`lease_s` that covers your longest step, or call `heartbeat` as you go.
+An MCP client sends nothing during a long step, so its silence proves nothing
+and the lease is what governs: ask for a `lease_s` that covers your longest
+step, or call `heartbeat` as you go.
 
-That is the one reason to prefer the stdio adapter over the HTTP transport.
+If you run agents under a supervisor of your own, it can do better. A process
+that renews the session in the background — with no involvement from the model —
+says so with `X-Noted-Transport: self-renewing`, and then its silence *is*
+evidence: when it dies its tasks return within `NOTED_SESSION_TTL_S` (90 s)
+instead of waiting out the lease. [RECIPES.md](RECIPES.md) shows the loop.
 
 That makes the executor loop short:
 
@@ -199,11 +194,10 @@ decides what to do next by it:
 | `validation_error` | false | 422 | malformed input |
 | `unauthorized` | false | 401 | `NOTED_TOKEN` is set and the header did not match |
 | `rate_limited` | false | 429 | the author posts faster than the limit |
-| `api_unavailable` | false | — | the core is not answering; returned by the adapter |
 
 `not_found`, `status_conflict` and `empty` are normal outcomes: an agent has to
-handle them rather than crash. Malformed input, a refused key and an unreachable
-core are additionally marked as tool errors.
+handle them rather than crash. Malformed input and a refused key are
+additionally marked as tool errors.
 
 ## Model
 
@@ -301,9 +295,7 @@ the file, so `docker run -e` and `export` override `.env`.
 | `NOTED_DB_POOL` | `10` | connections held against PostgreSQL |
 | `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
 | `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
-| `NOTED_API` | `http://127.0.0.1:8787` | where the stdio adapter looks for the core |
 | `NOTED_TOKEN` | empty | when set, `/api` and `/mcp` require `X-Noted-Token` |
-| `NOTED_KEY` | empty | the agent key for the stdio adapter |
 | `NOTED_LEASE_S` | `300` | lease length when the agent asks for none |
 | `NOTED_SESSION_TTL_S` | `90` | how long a session survives without renewal |
 | `NOTED_REAP_INTERVAL_S` | `15` | how often expired leases are collected |
@@ -392,7 +384,6 @@ the same code.
 ```
 api/          settings.py · models/ · routes/ (JSON, SSE, MCP) · services/ · utils/
               models/ holds the schema once and a store per engine
-mcp_adapter/  the stdio transport for clients without HTTP, no database access
 dashboard/    React on astralyx-ui, built into dist/
 deploy/       Dockerfile (two stages) and docker-compose.yml
 tests/        services · routes · mcp

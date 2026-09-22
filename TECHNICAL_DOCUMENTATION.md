@@ -65,7 +65,7 @@ noted/
 ├── cli.py                       # noted-keys: issuing and revoking agent keys
 ├── .env.example                 # every variable, explained; copied to .env
 ├── requirements.txt
-├── pyproject.toml               # entry points noted-api / noted-mcp / noted-keys
+├── pyproject.toml               # entry points noted-api / noted-keys
 ├── .dockerignore · .gitignore
 ├── README.md · SPEC.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
 ├── deploy/
@@ -94,7 +94,6 @@ noted/
 │       ├── authorization.py     # a principal from headers, the dashboard door
 │       ├── events.py            # two Conditions: work for agents, changes for dashboards
 │       └── tool_docs.py         # tool descriptions, shared by both transports
-├── mcp_adapter/                 # the stdio transport for clients without HTTP
 │   ├── client.py                # the httpx client to the core
 │   └── server.py                # the same tools over /api
 ├── dashboard/                   # the frontend, built into dist/
@@ -253,9 +252,10 @@ the last key would silently reopen the queue to everyone.
 
 **Sessions.** A task is held while either guard holds — the lease has not
 expired, or the session is alive — and a lease is taken on every claim. Only
-some transports prove liveness: the stdio adapter renews in the background, so
-its silence means a dead process and releases the task at once, while an HTTP
-client sends nothing during a long step and its silence proves nothing. Getting
+some clients prove liveness: one that declares `X-Noted-Transport: self-renewing`
+renews in the background, so its silence means a dead process and releases the
+task at once, while an ordinary MCP client sends nothing during a long step and
+its silence proves nothing. Getting
 this wrong in either direction costs something real: session-only would hand an
 HTTP agent's task away after ninety seconds of quiet, lease-only would take it
 away mid-build.
@@ -355,15 +355,18 @@ The session manager lives in the application lifespan
 (`session_manager.run()`), and it is exactly its run-once rule that makes the
 application a factory.
 
-**Over stdio (`mcp_adapter/`) — for clients without the HTTP transport.** A thin
-process: build a body, call `httpx`, return the answer as it is. No logic and no
-database access. An `httpx.ConnectError` turns into an `api_unavailable` envelope
-carrying the API address rather than a timeout and a traceback. The adapter also
-renews its session in the background, which is why it stays a separate process.
+There is no second transport. A stdio adapter existed and was removed: it was a
+whole process, a second code path and a second set of failure modes, all to
+reach a service that was already listening on a port. What it did uniquely —
+renewing the session in the background so a long step could not lose the task —
+is now a header any supervisor can send (`X-Noted-Transport: self-renewing`),
+which is the part that could not be built on top.
 
-Tool descriptions live in `utils/tool_docs.py` — one source for both transports,
-or the texts a model reads would drift apart. Hard outcomes (`validation_error`,
-`unauthorized`, `forbidden`, `rate_limited`, `api_unavailable`, `internal_error`)
+Tool descriptions live in `utils/tool_docs.py` — one source for the tools and
+the JSON API, or the texts a model reads would drift apart from the behaviour.
+A test pins them against the code, because that drift has happened twice.
+Hard outcomes (`validation_error`,
+`unauthorized`, `forbidden`, `rate_limited`, `internal_error`)
 are raised as tool errors; `not_found`, `status_conflict` and `empty` come back as
 ordinary results, because they are ordinary answers.
 
@@ -433,8 +436,7 @@ An agent connects over HTTP with nothing to install:
 claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 ```
 
-A client without the HTTP transport still has the stdio adapter (`noted-mcp`,
-from the same image or from a venv).
+That is the whole setup, and the only one: `http://host:port/mcp/`.
 
 ## 9. Tests
 
@@ -473,8 +475,6 @@ mirrors the code tree.
   dashboard is served from the root.
 - `routes/test_mcp_http.py` — a real SDK client: the tool list, a full cycle,
   errors and normal outcomes.
-- `mcp/test_adapter.py` — the same through the stdio adapter, and the behaviour
-  with the core switched off.
 
 Streaming checks (SSE, MCP) run against a live uvicorn from the `live_server`
 fixture: the in-memory ASGI transport does not deliver a stream incrementally.
@@ -498,13 +498,12 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 - [ ] A scoped agent neither sees nor takes foreign or unscoped tasks.
 - [ ] A database created before `project` existed opens and extends itself.
 - [ ] `/mcp` answers an SDK client right after the container starts.
-- [ ] With the core switched off the stdio adapter answers `api_unavailable`.
 - [ ] The dashboard shows tasks, filters live in the URL, status changes from the
       row menu, and a long list pages by scrolling without collapsing on a live
       update.
 - [ ] The image carries the built frontend but no Node; tasks survive recreating
       the container.
-- [ ] `grep -r "sqlite3\|psycopg\|SELECT" api/routes mcp_adapter` is empty: no SQL escaped
+- [ ] `grep -r "sqlite3\|psycopg\|SELECT" api/routes` is empty: no SQL escaped
       the services.
 
 ## Risks and answers
@@ -517,7 +516,7 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | PostgreSQL loses the guarantees the process lock gave | claims take `FOR UPDATE SKIP LOCKED`, read-then-write takes `FOR UPDATE` |
 | A long poll ties up a connection and a thread | waiting on a `Condition` (the thread stays free), `timeout_s` clamped to 300 s |
 | The MCP session manager is run twice | the application is built by a factory; each one gets its own server |
-| The core is down and the agent hangs | the stdio adapter answers `api_unavailable` with the address in `message` |
+| A tool description promises what the code does not | a test pins the two together |
 | A task is resurrected forever | the attempt counts on claim; exhaustion means a dead letter |
 | The lease collector dies quietly | the exception is logged and the loop continues |
 | An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |

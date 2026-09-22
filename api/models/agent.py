@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+#: What a client puts in `X-Noted-Transport` to say that it renews its session
+#: in the background, without the model having to think about it.
+#:
+#: This is the one thing the collector cannot work out for itself. An HTTP
+#: client sends nothing at all during a long step, so its silence proves
+#: nothing and only the lease can govern the hold. A client that renews itself
+#: is different: if it has gone quiet, the process is gone, and its tasks can
+#: go back to the queue immediately instead of waiting out a lease.
+SELF_RENEWING = "self-renewing"
+
 
 class Agent(BaseModel):
     """An agent as a principal. `id` is both the name and the `assignee_id` on tasks."""

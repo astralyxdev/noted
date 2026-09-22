@@ -10,7 +10,7 @@ Three thin layers:
 ```
 agents ──────── MCP over HTTP (/mcp) ───────>┌──────────────────────────────┐
                                              │           FastAPI            │
-agents ─MCP(stdio)─> adapter ──HTTP─────────>│ API · MCP · SSE · dashboard  │
+scripts ─────── JSON API (/api) ────────────>│ API · MCP · SSE · dashboard  │
                                              │                              │
 browser ──── static + /api + SSE ───────────>└───────────────┬──────────────┘
                                                              │
@@ -18,11 +18,10 @@ browser ──── static + /api + SSE ───────────>└�
 ```
 
 1. **The FastAPI core** owns the database. All the logic and all the SQL live here.
-2. **MCP** comes in two transports. The main one lives inside the core at `/mcp`
-   (streamable-http): the container is up, so the server is already there and no
-   separate process is needed. For clients that cannot speak the HTTP transport
-   there is a stdio adapter — a process per agent, stateless, with no database
-   access, translating calls into HTTP requests to the core.
+2. **MCP** lives inside the core at `/mcp` (streamable-http) and is the only
+   transport. The container is up, so the server is already there: an agent
+   points a client at `http://host:port/mcp/` and there is no adapter process,
+   no second thing to install, and no second code path to keep in step.
 3. **The web dashboard** — React on [astralyx-ui](https://ui.astralyx.dev), built
    into static files and served by the same application from the root. It uses
    the same `/api` the agents do and updates over SSE. There is no separate
@@ -70,9 +69,9 @@ first version are filled in then: an existing database neither breaks nor needs
 a manual migration. Moving between the engines is not automatic — it points the
 core at a different database, it does not carry the tasks over.
 
-Network: the core listens on `127.0.0.1:8787` (`NOTED_API` on the adapter side).
+Network: the core listens on `127.0.0.1:8787`; MCP is at `/mcp` on that same port.
 An optional `NOTED_TOKEN` is checked by middleware on `/api` and `/mcp`; the
-adapter and other clients send it in the `X-Noted-Token` header.
+clients send it in the `X-Noted-Token` header.
 
 ### Task model
 
@@ -131,12 +130,14 @@ not expired, or the session is still alive.
 
 Neither is enough alone. The lease is exactly what a model cannot renew
 mid-step: while a ten-minute build runs it makes no tool calls at all. The
-session is not enough either, because only some transports prove they are alive:
+session is not enough either, because only some clients prove they are alive:
 
-- the **stdio adapter** lives exactly as long as its client and renews in the
-  background, with no involvement from the model;
-- an **HTTP client** sends nothing during a long step, so its silence proves
-  nothing.
+- an **MCP client** sends nothing during a long step, so its silence proves
+  nothing and the lease has to govern;
+- a **supervisor that renews in the background**, declaring itself with
+  `X-Noted-Transport: self-renewing`, is the opposite: its silence means the
+  process is gone, so its tasks are released at once rather than on lease
+  expiry. Writing that supervisor is the agent author's job, not the core's.
 
 So a lease is taken on every claim, session or not, and a live session extends
 the hold past it.
@@ -284,7 +285,8 @@ transition is allowed, and `if_status` is what controls them.
 | `POST`/`GET` | `/mcp/` | MCP over the streamable-http transport |
 | `GET` | `/healthz` | liveness |
 
-Bodies and semantics match the MCP tools below — the adapter renames nothing.
+Bodies and semantics match the MCP tools below: the tools call these services
+directly, so the two surfaces cannot drift apart.
 
 ### Answers and errors
 
@@ -315,7 +317,6 @@ it. The field is not called `status` so it cannot be confused with the task's ow
 | `unauthorized` | false | 401 | `NOTED_TOKEN` is set and `X-Noted-Token` did not match |
 | `validation_error` | false | 422 | malformed input: wrong type, unknown status, empty `assignee_id` |
 | `rate_limited` | false | 429 | the author posts faster than the limit |
-| `api_unavailable` | false | — | the core is not answering; returned by the adapter, with the API address |
 | `internal_error` | false | 500 | everything else, with a log entry id |
 
 Expected negative outcomes (`not_found`, `status_conflict`, `empty`) are ordinary
@@ -376,9 +377,6 @@ Dispatch order is the contract above. `project` narrows the search strictly.
 `timeout_s=0` is a non-blocking pop; `timeout_s>0` is a long poll waiting up to N
 seconds and answering `outcome="empty"` when it runs out. That is the promised
 "persistent connection": no websockets, no broker, and no busy polling.
-
-If the core is unreachable the stdio adapter answers `outcome="api_unavailable"`
-with the API address in `message`, rather than a timeout or a traceback.
 
 ### The event stream
 

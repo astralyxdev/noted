@@ -79,18 +79,8 @@ def port() -> int:
     return _whole("NOTED_PORT", 8787, minimum=1)
 
 
-def api_url() -> str:
-    """Where the stdio adapter looks for the core."""
-    return _text("NOTED_API", "http://127.0.0.1:8787").rstrip("/")
-
-
 def admin_token() -> str | None:
     return (os.environ.get("NOTED_TOKEN") or "").strip() or None
-
-
-def agent_key() -> str | None:
-    """Agent key for the stdio adapter; falls back to the shared token."""
-    return (os.environ.get("NOTED_KEY") or os.environ.get("NOTED_TOKEN") or "").strip() or None
 
 
 # ── liveness and recovery ────────────────────────────────────────────────

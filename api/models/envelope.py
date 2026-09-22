@@ -1,7 +1,7 @@
 """The single response envelope.
 
 It lives in models because every delivery layer uses it — JSON routes, MCP
-tools and the stdio adapter — so the shape of an answer cannot drift apart
+tools — so the shape of an answer cannot drift apart
 between them.
 """
 
@@ -31,7 +31,6 @@ class Outcome(str, Enum):
     parent_not_found = "parent_not_found"
     unauthorized = "unauthorized"
     validation_error = "validation_error"
-    api_unavailable = "api_unavailable"
     internal_error = "internal_error"
 
 
@@ -51,7 +50,6 @@ HTTP_STATUS: dict[Outcome, int] = {
     Outcome.parent_not_found: 404,
     Outcome.unauthorized: 401,
     Outcome.validation_error: 422,
-    Outcome.api_unavailable: 503,
     Outcome.internal_error: 500,
 }
 
@@ -65,7 +63,6 @@ HARD_ERRORS = frozenset(
         Outcome.unauthorized,
         Outcome.forbidden,
         Outcome.validation_error,
-        Outcome.api_unavailable,
         Outcome.internal_error,
         # A flooding agent needs an exception, not a quiet "no": otherwise the
         # loop that got it there keeps spinning.

@@ -26,9 +26,8 @@ def _add(args: argparse.Namespace) -> int:
     print("  claude mcp add --transport http noted http://127.0.0.1:8787/mcp/ \\")
     print(f'      --header "X-Noted-Token: {issued.key}"')
     print()
-    print("For long steps prefer the stdio adapter: it renews the session while the")
-    print("model is busy, so a ten-minute build cannot lose the task.")
-    print(f"  claude mcp add noted --env NOTED_KEY={issued.key} -- noted-mcp")
+    print("A long step sends nothing while it runs, so ask for a lease that covers")
+    print("the worst case — claim_task with lease_s=1800 — or call heartbeat as you go.")
     return 0
 
 

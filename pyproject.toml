@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noted"
-version = "0.4.0"
+version = "0.5.0"
 description = "A task manager for agents: a FastAPI core, MCP, and a web dashboard"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,11 +23,10 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "psycopg[binary,pool]>=3.2"]
 
 [project.scripts]
 noted-api = "main:main"
-noted-mcp = "mcp_adapter.server:main"
 noted-keys = "cli:main"
 
 [tool.setuptools]
-packages = ["api", "api.models", "api.routes", "api.services", "api.utils", "mcp_adapter"]
+packages = ["api", "api.models", "api.routes", "api.services", "api.utils"]
 py-modules = ["main", "cli"]
 
 [tool.pytest.ini_options]

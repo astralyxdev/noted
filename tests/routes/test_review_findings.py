@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from api.models.agent import SELF_RENEWING
 from api.services import agents
 from api.services import tasks as service
 from api.services.agents import AgentError
@@ -123,14 +124,14 @@ def test_a_retry_releases_the_session(monkeypatch):
     monkeypatch.setenv("NOTED_RETRY_BASE_S", "0.01")
     task, _ = service.create({"title": "flaky"}, max_attempts=3)
 
-    first = agents.open_session("agent-1", "stdio")
+    first = agents.open_session("agent-1", SELF_RENEWING)
     service.claim("agent-1", session_id=first.id)
     service.set_status(task.id, "failed", actor="agent-1", session_id=first.id, strict_session=True)
 
     import time
 
     time.sleep(0.05)
-    second = agents.open_session("agent-2", "stdio")
+    second = agents.open_session("agent-2", SELF_RENEWING)
     retried = service.claim("agent-2", session_id=second.id)
     assert retried.id == task.id
 
@@ -154,3 +155,30 @@ def test_blocking_walks_the_whole_chain():
     service.set_status(a.id, "done", force=True)
     assert service.get(b.id).status.value == "pending"
     assert service.get(c.id).status.value == "blocked", "C waits until B itself is done"
+
+
+def test_the_claim_doc_does_not_promise_a_leaseless_session():
+    """The tool description is the only spec most agents ever read.
+
+    It used to say that a session meant no lease was set. The code has always
+    taken one, and an agent that believed the description would plan its
+    heartbeats around a guarantee that was not there. Pinned, because this
+    exact drift has happened twice.
+    """
+    from api.services import tasks as service
+    from api.utils.tool_docs import CLAIM_TASK
+
+    task, _ = service.create({"title": "leased"})
+    taken = service.claim("agent-1", session_id="a-live-session")
+    assert taken.lease_expires is not None, "a claim inside a session still takes a lease"
+
+    assert "no lease is set" not in CLAIM_TASK
+    assert "second guard" in CLAIM_TASK, "the doc must describe the lease and session as both holding"
+
+
+def test_nothing_still_refers_to_the_removed_stdio_adapter():
+    """The adapter is gone; the tools must not send agents looking for it."""
+    from api.utils import tool_docs
+
+    for name in ("SET_TASK", "GET_TASKS", "GET_TASK", "SET_STATUS", "CLAIM_TASK", "HEARTBEAT"):
+        assert "stdio" not in getattr(tool_docs, name).lower(), f"{name} still mentions stdio"
