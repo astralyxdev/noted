@@ -154,7 +154,7 @@ instead of waiting out the lease. [RECIPES.md](RECIPES.md) shows the loop.
 That makes the executor loop short:
 
 ```
-claim_task(project="noted", timeout_s=30)
+claim_task(assignee_id="agent-1", project="noted", timeout_s=30)
   → {"ok": true, "outcome": "claimed", "task": {"id": 42, ...}}
 
 set_status(task_id=42, status="done", result={"passed": 40})
@@ -194,6 +194,7 @@ decides what to do next by it:
 | `validation_error` | false | 422 | malformed input |
 | `unauthorized` | false | 401 | `NOTED_TOKEN` is set and the header did not match |
 | `rate_limited` | false | 429 | the author posts faster than the limit |
+| `internal_error` | false | 500 | a fault in the core; the log entry id is in `message` |
 
 `not_found`, `status_conflict` and `empty` are normal outcomes: an agent has to
 handle them rather than crash. Malformed input and a refused key are
@@ -295,7 +296,7 @@ the file, so `docker run -e` and `export` override `.env`.
 | `NOTED_DB_POOL` | `10` | connections held against PostgreSQL |
 | `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
 | `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
-| `NOTED_TOKEN` | empty | when set, `/api` and `/mcp` require `X-Noted-Token` |
+| `NOTED_TOKEN` | empty | when set, `/api`, `/mcp` and `/events` require `X-Noted-Token` |
 | `NOTED_LEASE_S` | `300` | lease length when the agent asks for none |
 | `NOTED_SESSION_TTL_S` | `90` | how long a session survives without renewal |
 | `NOTED_REAP_INTERVAL_S` | `15` | how often expired leases are collected |
@@ -378,15 +379,15 @@ repository rather than pulled in as a dependency. To add one:
 The core is split by layer and by domain: `routes/` is HTTP only, `services/`
 holds all the logic together with the SQL, `models/` the schemas and the database
 connection, `utils/` the cross-cutting parts. Services never import FastAPI, so
-their tests start no application while the routes, MCP and the adapter all call
-the same code.
+their tests start no application while the JSON routes and the MCP tools both
+call the same code.
 
 ```
 api/          settings.py · models/ · routes/ (JSON, SSE, MCP) · services/ · utils/
               models/ holds the schema once and a store per engine
 dashboard/    React on astralyx-ui, built into dist/
 deploy/       Dockerfile (two stages) and docker-compose.yml
-tests/        services · routes · mcp
+tests/        services · routes
 ```
 
 Requirements: Python ≥ 3.11, Node ≥ 20 (only to build the dashboard).

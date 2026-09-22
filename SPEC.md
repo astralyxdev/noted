@@ -70,7 +70,9 @@ a manual migration. Moving between the engines is not automatic — it points th
 core at a different database, it does not carry the tasks over.
 
 Network: the core listens on `127.0.0.1:8787`; MCP is at `/mcp` on that same port.
-An optional `NOTED_TOKEN` is checked by middleware on `/api` and `/mcp`; the
+An optional `NOTED_TOKEN` is checked by middleware on `/api`, `/mcp` and
+`/events` — the journal is as revealing as the API, so it sits behind the same
+door; the
 clients send it in the `X-Noted-Token` header.
 
 ### Task model

@@ -182,3 +182,49 @@ def test_nothing_still_refers_to_the_removed_stdio_adapter():
 
     for name in ("SET_TASK", "GET_TASKS", "GET_TASK", "SET_STATUS", "CLAIM_TASK", "HEARTBEAT"):
         assert "stdio" not in getattr(tool_docs, name).lower(), f"{name} still mentions stdio"
+
+
+#: Identifiers that were removed from the project. A document still naming one
+#: sends a reader after something that is not there.
+GONE = ("mcp_adapter", "noted-mcp", "NOTED_API", "NOTED_KEY", "api_unavailable")
+
+#: The one passage allowed to name them: the note explaining the removal.
+REMOVAL_NOTE = "A stdio adapter existed and was removed"
+
+
+def test_no_document_points_at_something_that_was_deleted():
+    """Prose drifts more quietly than code, and nothing compiles it.
+
+    Every one of these was found stale by review after the stdio adapter was
+    removed: file-tree entries for `client.py` and `server.py`, a test that no
+    longer exists, and three sentences about "the adapter" calling the same
+    code as the routes.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for name in ("README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", ".env.example"):
+        for number, line in enumerate((root / name).read_text(encoding="utf-8").splitlines(), 1):
+            if REMOVAL_NOTE in line:
+                continue
+            for dead in GONE:
+                assert dead not in line, f"{name}:{number} still refers to {dead}: {line.strip()}"
+
+
+def test_the_readme_settings_table_matches_the_code():
+    """Every documented variable is read, and every variable read is documented.
+
+    A default that drifts is worse than one that is missing: it is believed.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    code = (root / "api" / "settings.py").read_text(encoding="utf-8")
+    documented = set(re.findall(r"\| `(NOTED_[A-Z_]+)`", (root / "README.md").read_text(encoding="utf-8")))
+    # The table writes a pair as `NOTED_A` / `NOTED_B`, so pick those up too.
+    documented |= set(re.findall(r"`(NOTED_[A-Z_]+)`", (root / "README.md").read_text(encoding="utf-8")))
+    read_by_code = set(re.findall(r'"(NOTED_[A-Z_]+)"', code))
+
+    assert read_by_code - documented == set(), f"read but undocumented: {read_by_code - documented}"
+    assert documented - read_by_code == set(), f"documented but never read: {documented - read_by_code}"

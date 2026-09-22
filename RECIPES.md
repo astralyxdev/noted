@@ -112,7 +112,7 @@ COUNT=${2:-4}
 for i in $(seq 1 "$COUNT"); do
   (
     while true; do
-      claude -p "Take a task with claim_task(project='$PROJECT', timeout_s=60) and do it.
+      claude -p "Take a task with claim_task(assignee_id='worker-$i', project='$PROJECT', timeout_s=60) and do it.
                  Report back with set_status and a result. If the queue is empty, just exit."
       sleep 1   # empty queue: do not spin
     done
@@ -149,9 +149,12 @@ external logic can be built on events rather than on lighting up the dashboard.
 ```python
 import json, httpx
 
+# The journal is as revealing as the API, so /events is behind the same door.
+headers = {"X-Noted-Token": os.environ["NOTED_TOKEN"]}
+
 cursor = 0
 while True:
-    with httpx.stream("GET", "http://127.0.0.1:8787/events",
+    with httpx.stream("GET", "http://127.0.0.1:8787/events", headers=headers,
                       params={"after": cursor}, timeout=None) as stream:
         for line in stream.iter_lines():
             if not line.startswith("data: "):

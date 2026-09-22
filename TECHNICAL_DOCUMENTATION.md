@@ -93,9 +93,7 @@ noted/
 │       ├── __init__.py          # run_service (a service call in a thread) and respond
 │       ├── authorization.py     # a principal from headers, the dashboard door
 │       ├── events.py            # two Conditions: work for agents, changes for dashboards
-│       └── tool_docs.py         # tool descriptions, shared by both transports
-│   ├── client.py                # the httpx client to the core
-│   └── server.py                # the same tools over /api
+│       └── tool_docs.py         # tool descriptions, pinned against the code by a test
 ├── dashboard/                   # the frontend, built into dist/
 │   ├── components.json          # astralyx-ui config: where components land
 │   ├── vite.config.ts           # the @ alias, /api and /events proxied in dev
@@ -110,9 +108,8 @@ noted/
 │       └── lib/                 # format.ts plus the kit's helpers
 └── tests/
     ├── conftest.py              # a fresh database per test, a live uvicorn for streaming checks
-    ├── services/                # test_tasks · test_lease · test_retry · test_deps · test_journal · test_cas · test_identity · test_rate_limit
-    ├── routes/                  # test_tasks · test_dashboard · test_mcp_http · test_identity_http · test_events_contract
-    └── mcp/test_adapter.py
+    ├── services/                # test_tasks · test_lease · test_retry · test_deps · test_journal · test_cas · test_identity · test_rate_limit · test_concurrency
+    └── routes/                  # test_tasks · test_dashboard · test_mcp_http · test_identity_http · test_events_contract · test_review_findings
 ```
 
 **Layer rules** — the reason the layout exists at all:
@@ -122,7 +119,7 @@ noted/
 - `services/` holds the domain logic, SQL included. They never import FastAPI:
   they know nothing of `Request` or `HTTPException`, they return data and raise
   domain errors. That is why their tests start no application, while the JSON
-  routes, MCP and the adapter all call the same code.
+  JSON routes and the MCP tools both call the same code.
 - `models/` holds pydantic schemas and `database.py` with the connection and the
   schema. No logic.
 - `utils/` is cross-cutting, tied to no domain.
@@ -301,8 +298,8 @@ model with `ok`, `outcome`, `message` and a payload (`task` / `tasks` / `count` 
 `events` / `stats` / `projects` / `assignees`). Next to it sits the project's one
 and only `outcome → HTTP code` table.
 
-The envelope lives in `models/` because all three delivery layers use it — JSON
-routes, MCP and the adapter — so the shape of an answer cannot drift.
+The envelope lives in `models/` because both delivery layers use it — the JSON
+routes and the MCP tools — so the shape of an answer cannot drift.
 
 Serialisation uses `exclude_unset`: an explicit `task: null` survives, while
 fields nobody filled in stay out of the response.
@@ -464,8 +461,12 @@ mirrors the code tree.
   everything at once.
 - `services/test_rate_limit.py` — a flood from one author is cut, other budgets
   are untouched, anonymous authors share a bucket, an idempotent repeat passes.
+- `services/test_concurrency.py` — what has to hold when two callers arrive at
+  once: every claimer gets its own task, one writer wins a compare-and-set.
 - `routes/test_tasks.py` — a case per outcome, HTTP codes, the token middleware,
-  the long poll.
+  the long poll, and that released work wakes a waiting agent.
+- `routes/test_review_findings.py` — one test per defect found in review, so a
+  fixed bug cannot come back quietly.
 - `routes/test_identity_http.py` — the key decides who you are, the scope is
   enforced, a revoked key stops working, a transport session holds a task without
   a lease, a second instance cannot write, and the dashboard has its own door.
