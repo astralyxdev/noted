@@ -1,11 +1,14 @@
-"""MCP-адаптер: пять инструментов из SPEC.md поверх HTTP-ядра.
+"""The stdio MCP adapter: the tools from SPEC.md over the HTTP core.
 
-Логики здесь нет намеренно. Каждый инструмент собирает тело, дёргает клиент и
-отдаёт ответ как есть — форма ответа задаётся ядром в одном месте.
+There is no logic here on purpose. Each tool builds a body, calls the client
+and returns the answer as it is — the shape of a response is defined by the
+core, in one place.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -22,8 +25,37 @@ from api.utils.tool_docs import (
 )
 from mcp_adapter.client import request
 
+async def _keep_session_alive(interval_s: float = 25.0) -> None:
+    """Background session renewal.
+
+    This is why the adapter stays a separate process: while it lives the agent
+    lives, even if the model spends ten minutes waiting for a build and makes
+    no calls at all. When the process dies the session expires and everything
+    it held is released at once.
+    """
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await request("POST", "/api/sessions/renew")
+        except Exception:  # noqa: BLE001 - renewal must never kill the adapter
+            pass
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_server: MCPServer):
+    """Session renewal lives exactly as long as the adapter does."""
+    keepalive = asyncio.create_task(_keep_session_alive())
+    try:
+        yield {}
+    finally:
+        keepalive.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await keepalive
+
+
 server = MCPServer(
     name="noted",
+    lifespan=_lifespan,
     instructions=(
         "Таск-менеджер для агентов. Ставьте задачи через set_task, забирайте работу через "
         "claim_task (timeout_s>0 — ждать появления задачи), отчитывайтесь через set_status. "
@@ -111,8 +143,15 @@ async def set_status(
     result: Any = None,
     if_status: str | None = None,
     assignee_id: str | int | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    payload = {"status": status, "result": result, "if_status": if_status, "assignee_id": assignee_id}
+    payload = {
+        "status": status,
+        "result": result,
+        "if_status": if_status,
+        "assignee_id": assignee_id,
+        "force": force,
+    }
     return _check(await request("PATCH", f"/api/tasks/{task_id}/status", json=payload))
 
 

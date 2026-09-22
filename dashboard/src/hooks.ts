@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { api, NONE, STATUSES, type Filters, type Stats, type Status, type TaskSummary } from '@/api'
+import { ApiError, api, NONE, STATUSES, type Filters, type Stats, type Status, type TaskSummary } from '@/api'
 
 const DEFAULT_LIMIT = 50
 
-/** Сколько строк догружать за раз при скролле. */
+/** How many rows to pull per scroll. */
 export const PAGE = 50
 
 /**
- * Потолок окна, которое перечитывается по событию от сервера. Дальше хвост
- * остаётся таким, каким загрузился: это старые задачи, они почти не меняются,
- * а тянуть тысячи строк на каждое изменение незачем.
+ * Ceiling of the window re-read on every server event. Past it the tail stays
+ * as it was loaded: those are old tasks, they barely change, and pulling
+ * thousands of rows on every change would buy nothing.
  */
 const LIVE_WINDOW_CAP = 500
 
@@ -24,7 +24,7 @@ const EMPTY_STATS: Stats = {
   total: 0,
 }
 
-/** Состояние страницы живёт в URL: ссылкой на отфильтрованный вид можно поделиться. */
+/** Page state lives in the URL, so a filtered view can be shared as a link. */
 function readFilters(): Filters {
   const query = new URLSearchParams(window.location.search)
   const known = new Set<string>(STATUSES)
@@ -85,6 +85,7 @@ export function useDashboard(filters: Filters) {
   const [projects, setProjects] = useState<string[]>([])
   const [assignees, setAssignees] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [locked, setLocked] = useState(false)
   const [pending, setPending] = useState(true)
   const [more, setMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -102,15 +103,17 @@ export function useDashboard(filters: Filters) {
         api.list(filters, { limit: want }),
         api.overview(filters.project === NONE ? NONE : filters.project),
       ])
-      // Хвост за пределами окна сохраняем — перечитывать его на каждое событие дорого.
+      // The tail beyond the window is kept: re-reading it on every event is costly.
       setTasks((prev) => (prev.length > want ? [...list, ...prev.slice(want)] : list))
       setMore((prev) => (shown.current.length > want ? prev : list.length === want))
       setStats(overview.stats)
       setProjects(overview.projects)
       setAssignees(overview.assignees)
       setError(null)
+      setLocked(false)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (cause instanceof ApiError && cause.outcome === 'unauthorized') setLocked(true)
+      else setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       inFlight.current = false
       setPending(false)
@@ -136,8 +139,8 @@ export function useDashboard(filters: Filters) {
   }, [filters, loadingMore])
 
   useEffect(() => {
-    // Сменились фильтры — начинаем список заново, иначе к новой выдаче
-    // прилипнет хвост от предыдущей.
+    // Filters changed, so the list starts over: otherwise the tail of the
+    // previous result would stick to the new one.
     loaded.current = PAGE
     setTasks([])
     setMore(false)
@@ -145,10 +148,10 @@ export function useDashboard(filters: Filters) {
     void refresh()
   }, [refresh])
 
-  return { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh }
+  return { tasks, stats, projects, assignees, error, locked, pending, more, loadingMore, loadMore, refresh }
 }
 
-/** Догружает следующую порцию, когда низ списка подошёл к экрану. */
+/** Pulls the next page once the bottom of the list approaches the screen. */
 export function useNearBottom(enabled: boolean, onReach: () => void) {
   const anchor = useRef<HTMLDivElement | null>(null)
 
@@ -170,20 +173,22 @@ export function useNearBottom(enabled: boolean, onReach: () => void) {
 
 export type LiveState = 'connecting' | 'live' | 'down'
 
-/** Сервер сам сообщает об изменениях. Опроса по таймеру нет. */
+/** The server announces changes itself. There is no timer-based polling. */
 export function useLive(onChange: () => void): LiveState {
   const [state, setState] = useState<LiveState>('connecting')
   const handler = useRef(onChange)
   handler.current = onChange
 
   useEffect(() => {
-    // TS сужает `'EventSource' in window` до всегда-истины, поэтому проверяем типом.
+    // TS narrows `'EventSource' in window` to always-true, so check the type.
     if (typeof EventSource === 'undefined') {
       const timer = setInterval(() => handler.current(), 10_000)
       return () => clearInterval(timer)
     }
     const source = new EventSource('/events')
-    source.addEventListener('tasks', () => handler.current())
+    // An event carries the whole transition, but the dashboard only needs the
+    // fact of a change: it re-reads its window instead of rebuilding state.
+    source.addEventListener('task', () => handler.current())
     source.onopen = () => setState('live')
     source.onerror = () => setState('down')
     const onVisible = () => {
@@ -199,7 +204,7 @@ export function useLive(onChange: () => void): LiveState {
   return state
 }
 
-/** Относительное время должно стареть само, без перезагрузки страницы. */
+/** Relative time has to age on its own, without a page reload. */
 export function useTicker(everyMs = 30_000) {
   const [, tick] = useState(0)
   useEffect(() => {

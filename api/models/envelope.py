@@ -1,7 +1,8 @@
-"""Единый конверт ответа.
+"""The single response envelope.
 
-Лежит в models, потому что им пользуются оба верхних слоя и MCP-адаптер:
-так форма ответа не разъезжается между JSON-роутами и инструментами агента.
+It lives in models because every delivery layer uses it — JSON routes, MCP
+tools and the stdio adapter — so the shape of an answer cannot drift apart
+between them.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ class Outcome(str, Enum):
     not_found = "not_found"
     status_conflict = "status_conflict"
     not_owner = "not_owner"
+    forbidden = "forbidden"
+    stale_session = "stale_session"
     rate_limited = "rate_limited"
     parent_not_found = "parent_not_found"
     unauthorized = "unauthorized"
@@ -42,6 +45,8 @@ HTTP_STATUS: dict[Outcome, int] = {
     Outcome.not_found: 404,
     Outcome.status_conflict: 409,
     Outcome.not_owner: 409,
+    Outcome.forbidden: 403,
+    Outcome.stale_session: 409,
     Outcome.rate_limited: 429,
     Outcome.parent_not_found: 404,
     Outcome.unauthorized: 401,
@@ -54,15 +59,16 @@ SUCCESS = frozenset(
     {Outcome.created, Outcome.exists, Outcome.ok, Outcome.updated, Outcome.claimed, Outcome.empty}
 )
 
-#: Исходы, которые агент должен получить как ошибку инструмента, а не как результат.
+#: Outcomes an agent must receive as a tool error rather than as a result.
 HARD_ERRORS = frozenset(
     {
         Outcome.unauthorized,
+        Outcome.forbidden,
         Outcome.validation_error,
         Outcome.api_unavailable,
         Outcome.internal_error,
-        # Захлебнувшийся агент должен получить исключение, а не тихое «нет»:
-        # иначе цикл, который его туда загнал, продолжит крутиться.
+        # A flooding agent needs an exception, not a quiet "no": otherwise the
+        # loop that got it there keeps spinning.
         Outcome.rate_limited,
     }
 )
@@ -87,6 +93,6 @@ def envelope(outcome: Outcome, message: str | None = None, **payload: Any) -> En
 
 
 def body(env: Envelope) -> dict[str, Any]:
-    """Сериализация с exclude_unset: `task: null` остаётся, если его передали явно,
-    а незаполненные `tasks`/`count` в ответ не попадают."""
+    """Serialised with exclude_unset: an explicit `task: null` survives, while
+    fields nobody filled in stay out of the response."""
     return env.model_dump(mode="json", exclude_unset=True)

@@ -1,29 +1,38 @@
-"""HTTP-клиент к ядру.
+"""The HTTP client to the core.
 
-Адаптер не трогает базу: он только переводит вызовы инструментов в запросы.
-Если ядро не поднято, наружу уходит конверт api_unavailable с адресом API,
-а не таймаут и не трейсбек.
+The adapter never touches the database: it only turns tool calls into
+requests. When the core is down, what comes back is an api_unavailable
+envelope carrying the API address, not a timeout and not a traceback.
 """
 
 from __future__ import annotations
 
-import os
+import secrets
 from typing import Any
 
 import httpx
 
-DEFAULT_API = "http://127.0.0.1:8787"
+from api import settings
+
 REQUEST_TIMEOUT = 10.0
 TOKEN_HEADER = "X-Noted-Token"
+SESSION_HEADER = "X-Noted-Session"
+
+#: This process's session. The adapter lives exactly as long as its client, so
+#: its life is the agent's proof of life — the model never thinks about it.
+SESSION_ID = secrets.token_urlsafe(18)
 
 
 def api_url() -> str:
-    return os.environ.get("NOTED_API", DEFAULT_API).rstrip("/")
+    return settings.api_url()
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("NOTED_TOKEN", "").strip()
-    return {TOKEN_HEADER: token} if token else {}
+    token = settings.agent_key()
+    headers = {SESSION_HEADER: SESSION_ID}
+    if token:
+        headers[TOKEN_HEADER] = token
+    return headers
 
 
 def _unavailable(detail: str) -> dict[str, Any]:

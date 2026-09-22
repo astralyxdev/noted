@@ -1,7 +1,7 @@
-"""Предохранитель на создание задач.
+"""The guard rail on task creation.
 
-Очередь открыта — ставить может кто угодно. Значит зациклившийся агент зальёт
-её тысячей задач за секунды, и остановить его должен сервис.
+The queue is open, so anyone may post to it. That means a looping agent can
+flood it with a thousand tasks in seconds, and stopping it is the service's job.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def test_runaway_author_is_stopped():
 
     assert err.value.code is Outcome.rate_limited
     assert "притормозите" in err.value.message
-    assert len(service.list_tasks()) == 3, "лишняя задача не создалась"
+    assert len(service.list_tasks()) == 3, "the extra task was not created"
 
 
 def test_authors_have_separate_budgets():
@@ -41,7 +41,7 @@ def test_authors_have_separate_budgets():
 
 
 def test_anonymous_creators_share_one_budget():
-    """Без автора все в одном ведре: иначе предохранитель обходится пустым полем."""
+    """Everyone without an author shares one bucket, or an empty field would bypass the guard."""
     for n in range(3):
         service.create({"n": n})
 
@@ -50,7 +50,7 @@ def test_anonymous_creators_share_one_budget():
 
 
 def test_idempotent_repeat_is_not_throttled():
-    """Повтор с тем же ключом ничего не создаёт — резать его незачем."""
+    """A repeat under the same key creates nothing, so there is nothing to cut."""
     first, _ = service.create({"n": 1}, created_by="agent-loop", key="job-1")
     service.create({"n": 2}, created_by="agent-loop")
     service.create({"n": 3}, created_by="agent-loop")

@@ -1,12 +1,13 @@
-"""Пробуждение ждущих: агентов на claim и браузеров на дэшборде.
+"""Waking up whoever is waiting: agents on claim, browsers on the dashboard.
 
-Ядро — один процесс, поэтому хватает двух asyncio.Condition без брокера:
+The core is a single process, so two asyncio.Conditions are enough and no
+broker is needed:
 
-* `available` — появилась задача, которую можно забрать. Будит long-poll в claim.
-* `changed`   — состояние изменилось вообще как-нибудь. Будит SSE-поток дэшборда.
+* `available` — work appeared that somebody may take. Wakes the claim long-poll.
+* `changed`   — the state moved in any way at all. Wakes the dashboard stream.
 
-Разделены намеренно: захват задачи меняет картину на дэшборде, но будить ради
-этого агентов, ждущих работу, незачем — они проснутся впустую.
+They are split on purpose: claiming a task changes what the dashboard shows,
+but waking agents that are waiting for work would wake them for nothing.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ _changed: asyncio.Condition | None = None
 
 
 def _condition(which: str) -> asyncio.Condition:
-    """Создаются лениво: объект должен родиться внутри работающего loop."""
+    """Created lazily: the object has to be born inside a running loop."""
     global _available, _changed
     if which == "available":
         if _available is None:
@@ -40,13 +41,13 @@ async def _notify(cond: asyncio.Condition) -> None:
 
 
 async def notify_new_task() -> None:
-    """Появилась работа: будим и агентов, и дэшборд."""
+    """Work appeared: wake both the agents and the dashboard."""
     await _notify(_condition("available"))
     await _notify(_condition("changed"))
 
 
 async def notify_change() -> None:
-    """Состояние изменилось, но новой работы не появилось: только дэшборд."""
+    """The state moved but no new work appeared: dashboard only."""
     await _notify(_condition("changed"))
 
 
@@ -62,8 +63,8 @@ async def _wait(cond: asyncio.Condition, timeout: float) -> bool:
 
 
 async def wait_for_task(timeout: float) -> bool:
-    """True — разбудили, False — вышел таймаут. В обоих случаях вызывающий
-    пробует захват заново: пробуждение не значит, что задача досталась ему."""
+    """True when woken, False on timeout. Either way the caller tries to claim
+    again: being woken does not mean the task went to this waiter."""
     return await _wait(_condition("available"), timeout)
 
 

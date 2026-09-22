@@ -1,4 +1,4 @@
-"""Сквозные мелочи, не привязанные к домену."""
+"""Cross-cutting helpers that belong to no single domain."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ T = TypeVar("T")
 
 
 def respond(env: Envelope) -> JSONResponse:
-    """Конверт наружу: HTTP-код берётся из единственной таблицы соответствий."""
+    """The envelope on its way out; the status code comes from one table."""
     return JSONResponse(status_code=HTTP_STATUS[env.outcome], content=body(env))
 
 
 async def run_service(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """Сервисы синхронные (sqlite), поэтому зовём их в отдельном потоке —
-    иначе блокируется event loop и вместе с ним все ждущие long-poll."""
+    """Services are synchronous (sqlite), so they run in a worker thread:
+    blocking the event loop would stall every waiting long-poll with it."""
     return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))

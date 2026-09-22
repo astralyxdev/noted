@@ -1,4 +1,4 @@
-"""Повторы и dead letter."""
+"""Retries and the dead letter."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from api.services import tasks as service
 
 @pytest.fixture(autouse=True)
 def fast_backoff(monkeypatch):
-    """Пауза между попытками — доли секунды, иначе тест ждёт минутами."""
+    """Fractions of a second between attempts, or the test would wait minutes."""
     monkeypatch.setenv("NOTED_RETRY_BASE_S", "0.02")
     monkeypatch.setenv("NOTED_RETRY_CAP_S", "0.05")
 
@@ -21,11 +21,11 @@ def test_failure_returns_to_the_queue_until_attempts_run_out():
 
     service.claim("agent-1")
     outcome, after_first = service.set_status(task.id, "failed", result={"error": "502"})
-    assert after_first.status.value == "pending", "попытки остались — задача снова в очереди"
+    assert after_first.status.value == "pending", "attempts remain, so it is queued again"
     assert after_first.attempts == 1
     assert after_first.retry_after is not None
 
-    assert service.claim("agent-1") is None, "до истечения паузы задача не выдаётся"
+    assert service.claim("agent-1") is None, "not handed out before the pause is over"
     time.sleep(0.05)
 
     second = service.claim("agent-1")
@@ -33,7 +33,7 @@ def test_failure_returns_to_the_queue_until_attempts_run_out():
     assert second.attempts == 2
 
     _, dead = service.set_status(task.id, "failed", result={"error": "502 снова"})
-    assert dead.status.value == "failed", "попытки исчерпаны — задача остаётся проваленной"
+    assert dead.status.value == "failed", "attempts exhausted, so it stays failed"
     assert service.claim("agent-1") is None
 
 
@@ -49,7 +49,7 @@ def test_expired_lease_with_no_attempts_left_goes_to_dead_letter():
     service.claim("agent-1", lease_s=0.01)
 
     time.sleep(0.05)
-    assert service.reap_expired() == [], "воскрешать нечего — попытка была последней"
+    assert service.reap_expired() == [], "nothing to resurrect, that was the last attempt"
 
     dead = service.get(task.id)
     assert dead.status.value == "failed"

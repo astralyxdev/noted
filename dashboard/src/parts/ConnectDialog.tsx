@@ -14,7 +14,7 @@ import { Separator } from '@/components/ui/separator'
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void }
 
-/** Кусок, который нужно скопировать целиком, с кнопкой копирования. */
+/** A snippet meant to be copied whole, with a copy button. */
 function Snippet({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
 
@@ -24,8 +24,8 @@ function Snippet({ text }: { text: string }) {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     } catch {
-      // Буфер недоступен (не-https, отказ в правах) — текст остаётся на виду,
-      // его можно выделить руками.
+      // The clipboard is unavailable (non-https, denied permission) — the text
+      // stays visible and can still be selected by hand.
     }
   }
 
@@ -48,7 +48,7 @@ function Snippet({ text }: { text: string }) {
 }
 
 export function ConnectDialog({ open, onOpenChange }: Props) {
-  // Адрес берём из текущей страницы: дэшборд и MCP живут на одном порту.
+  // The address comes from the current page: dashboard and MCP share a port.
   const base = window.location.origin
   const url = `${base}/mcp/`
 

@@ -1,7 +1,8 @@
-"""Описания MCP-инструментов — один источник для обоих транспортов.
+"""MCP tool descriptions — one source for both transports.
 
-Тексты видит модель, они и есть документация API для агента. Держим их в одном
-месте, чтобы HTTP-сервер в ядре и stdio-адаптер не разъехались.
+The model reads these texts, and they are the API documentation an agent gets.
+They live in one place so the in-core HTTP server and the stdio adapter cannot
+drift apart.
 """
 
 from __future__ import annotations
@@ -83,9 +84,10 @@ HEARTBEAT = """Продлить аренду задачи: «я жив и всё
 Продлить можно только свою задачу и только пока она в in_progress.
 Исходы: updated, not_found, status_conflict, not_owner."""
 
-#: Исходы, которые агент должен увидеть как ошибку инструмента, а не как результат.
-#: not_found, status_conflict и empty сюда не входят: это штатные ответы.
+#: Outcomes an agent must see as a tool error rather than as a result.
+#: not_found, status_conflict and empty stay out: those are normal answers.
 #:
-#: Список ровно один и живёт в конверте: два независимых набора уже разъезжались —
-#: rate_limited добавили в конверт, а MCP продолжал отдавать его тихим ответом.
+#: There is exactly one such list and it lives in the envelope. Two independent
+#: sets had already drifted once: rate_limited was added to the envelope while
+#: MCP kept returning it as a quiet answer.
 HARD_ERRORS = frozenset(outcome.value for outcome in _HARD_OUTCOMES)

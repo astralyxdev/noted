@@ -1,4 +1,4 @@
-"""Схемы домена задач: сама задача и тела запросов."""
+"""Task domain schemas: the task itself and the request bodies."""
 
 from __future__ import annotations
 
@@ -25,13 +25,13 @@ OPEN = tuple(s for s in Status if s not in TERMINAL)
 MAX_LIMIT = 500
 MAX_TIMEOUT_S = 300.0
 
-#: Аренда: сколько держать задачу за исполнителем, если он не назвал срок сам.
+#: How long a task stays with its executor when no lease was asked for.
 DEFAULT_LEASE_S = 300.0
 MAX_LEASE_S = 86_400.0
 
 
 class TaskSummary(BaseModel):
-    """Вид для списка: без `result`, чтобы выдача не сжигала контекст агента."""
+    """List view: no `result`, so a page of tasks cannot burn an agent's context."""
 
     id: int
     task: dict[str, Any]
@@ -43,12 +43,13 @@ class TaskSummary(BaseModel):
     key: str | None
     priority: int
     attempts: int
-    #: Сколько предшественников ещё не закрыто. Пока больше нуля, задачу
-    #: нельзя забрать, даже если она в pending.
+    #: How many predecessors are still open. While this is above zero the task
+    #: cannot be claimed, even though it sits in pending.
     waiting_on: int = 0
     max_attempts: int | None
     retry_after: str | None
     lease_expires: str | None
+    session_id: str | None = None
     created_at: str
     updated_at: str
 
@@ -59,7 +60,7 @@ class Task(TaskSummary):
 
 
 class TaskEvent(BaseModel):
-    """Запись журнала переходов. Только дописывается, никогда не меняется."""
+    """A journal entry. Append-only; entries are never rewritten."""
 
     id: int
     task_id: int
@@ -87,16 +88,23 @@ class SetStatusRequest(BaseModel):
     status: Status
     result: Any = None
     if_status: Status | None = None
-    #: Кто меняет. Если задача занята другим исполнителем — отказ not_owner.
+    #: Who is writing. A task held by someone else answers with not_owner.
     assignee_id: ActorId | None = None
+    #: Unconditional write. Compare-and-set is the default on purpose: a
+    #: forgotten if_status must not break invariants in silence.
+    force: bool = False
 
 
 class ClaimRequest(BaseModel):
     assignee_id: ActorId
     project: str | None = None
     timeout_s: float = Field(default=0.0, ge=0.0)
-    #: Срок аренды. null — без аренды: задача останется за исполнителем навсегда.
+    #: Lease length. Null means no lease: the task stays with its holder.
     lease_s: float | None = Field(default=None, ge=0.0)
+
+
+class LoginRequest(BaseModel):
+    token: str
 
 
 class HeartbeatRequest(BaseModel):

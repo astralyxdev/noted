@@ -1,4 +1,4 @@
-"""Журнал переходов: по нему разбирают инцидент."""
+"""The transition journal: what an incident is reconstructed from."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def test_journal_records_the_whole_life_of_a_task():
 def test_journal_is_append_only_per_task():
     one, _ = service.create({"title": "одна"})
     two, _ = service.create({"title": "другая"})
-    service.set_status(one.id, "cancelled")
+    service.set_status(one.id, "cancelled", force=True)
 
     assert [e.event for e in service.events(one.id)] == ["created", "status"]
     assert [e.event for e in service.events(two.id)] == ["created"]

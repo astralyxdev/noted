@@ -1,22 +1,23 @@
-"""Логика домена задач. Здесь живёт весь SQL.
+"""Task domain logic. All the SQL lives here.
 
-Модуль сознательно не знает про FastAPI: возвращает данные и поднимает
-TaskError, а как это превратить в HTTP — дело слоя доставки. Поэтому один и
-тот же код обслуживает и JSON-API, и MCP, и дэшборд, и тесты без поднятия
-приложения.
+The module knows nothing about FastAPI on purpose: it returns data and raises
+TaskError, and turning that into HTTP is the delivery layer's job. That is why
+the same code serves the JSON API, MCP, the dashboard, and tests that never
+start the application.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from api import settings
 from api.models import database
 from api.models.envelope import Outcome
+from api.services import agents
 from api.models.task import (
     DEFAULT_LEASE_S,
     MAX_LEASE_S,
@@ -31,7 +32,7 @@ from api.models.task import (
 
 
 class TaskError(Exception):
-    """Ошибка, понятная вызывающему слою: code — это значение Outcome."""
+    """An error the calling layer understands: `code` is an Outcome value."""
 
     def __init__(self, code: Outcome, message: str) -> None:
         super().__init__(message)
@@ -39,52 +40,11 @@ class TaskError(Exception):
         self.message = message
 
 
-# ─────────────────────────────── настройки ───────────────────────────────
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
-
-def default_lease_s() -> float:
-    return _env_float("NOTED_LEASE_S", DEFAULT_LEASE_S)
-
-
-def retry_base_s() -> float:
-    """Первая пауза перед повтором; дальше удваивается."""
-    return _env_float("NOTED_RETRY_BASE_S", 5.0)
-
-
-def retry_cap_s() -> float:
-    return _env_float("NOTED_RETRY_CAP_S", 300.0)
-
-
-def create_limit() -> int:
-    """Сколько задач один автор может поставить за окно. 0 — без ограничения.
-
-    Смысл не в квотах, а в предохранителе: очередь открыта, ставить может кто
-    угодно, и зациклившийся агент зальёт её тысячей задач за секунды. Предел
-    взят с запасом, чтобы честная декомпозиция работы в сотню подзадач прошла,
-    а патология — нет.
-    """
-    try:
-        return max(0, int(os.environ.get("NOTED_CREATE_LIMIT", "") or 300))
-    except ValueError:
-        return 300
-
-
-def create_window_s() -> float:
-    return _env_float("NOTED_CREATE_WINDOW_S", 60.0)
-
-
 def _backoff(attempt: int) -> float:
-    return min(retry_base_s() * (2 ** max(attempt - 1, 0)), retry_cap_s())
+    return min(settings.retry_base_s() * (2 ** max(attempt - 1, 0)), settings.retry_cap_s())
 
 
-# ──────────────────────────── преобразования ─────────────────────────────
+# ──────────────────────────── conversions ───────────────────────────────
 
 
 def _iso(ts: float | None) -> str | None:
@@ -94,7 +54,7 @@ def _iso(ts: float | None) -> str | None:
 
 
 def _actor(value: ActorId | None, field: str) -> str | None:
-    """assignee_id, created_by и project приходят строкой или числом — храним TEXT."""
+    """assignee_id, created_by and project arrive as a string or a number; stored as TEXT."""
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (str, int)):
@@ -121,11 +81,11 @@ def _dump(value: Any, field: str) -> str:
 
 
 def _lease(value: float | None) -> float:
-    lease = default_lease_s() if value is None else float(value)
+    lease = settings.lease_s() if value is None else float(value)
     return max(0.0, min(lease, MAX_LEASE_S))
 
 
-#: Подзапрос счёта незакрытых зависимостей — чтобы список не делал N+1.
+#: Subquery counting unmet dependencies, so listing does not turn into N+1.
 UNMET_DEPS = """(SELECT COUNT(*) FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id
                   WHERE d.task_id = tasks.id AND p.status <> 'done')"""
 
@@ -147,6 +107,7 @@ def _fields(row: sqlite3.Row) -> dict[str, Any]:
         "max_attempts": row["max_attempts"],
         "retry_after": _iso(row["retry_after"]),
         "lease_expires": _iso(row["lease_expires"]),
+        "session_id": row["session_id"] if "session_id" in row.keys() else None,
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -200,8 +161,8 @@ def _log(
     detail: Any = None,
     at: float | None = None,
 ) -> None:
-    """Запись в журнал. Пишется в той же транзакции, что и само изменение,
-    иначе журнал разойдётся с состоянием."""
+    """A journal entry, written in the same transaction as the change itself;
+    otherwise the journal drifts away from the state."""
     conn.execute(
         """
         INSERT INTO task_events (task_id, at, event, actor, from_status, to_status, detail)
@@ -219,7 +180,7 @@ def _log(
     )
 
 
-# ──────────────────────────────── создание ────────────────────────────────
+# ──────────────────────────────── creating ───────────────────────────────
 
 
 def create(
@@ -233,8 +194,8 @@ def create(
     max_attempts: int | None = None,
     depends_on: Sequence[int] | None = None,
 ) -> tuple[Task, bool]:
-    """Создать задачу. Второй элемент — создана ли она на самом деле: при
-    совпадении `key` возвращается существующая, чтобы ретрай агента не плодил дубли."""
+    """Create a task. The second element says whether it was really created:
+    a matching `key` returns the existing task so a retry breeds no duplicates."""
     if not isinstance(task, dict):
         raise TaskError(Outcome.validation_error, "task должен быть JSON-объектом")
     payload = _dump(task, "task")
@@ -249,15 +210,15 @@ def create(
 
     now = time.time()
     with database.transaction() as conn:
-        # Идемпотентный повтор ничего не создаёт, поэтому и лимитом не режется.
+        # An idempotent repeat creates nothing, so the rate limit must not cut it.
         if key is not None:
             already = conn.execute("SELECT * FROM tasks WHERE key = ?", (key,)).fetchone()
             if already is not None:
                 return _task(conn, already), False
 
-        limit = create_limit()
+        limit = settings.create_limit()
         if limit:
-            window = create_window_s()
+            window = settings.create_window_s()
             recent = conn.execute(
                 f"SELECT COUNT(*) AS n FROM tasks WHERE created_at > ? AND created_by IS {'NOT NULL AND created_by = ?' if creator else 'NULL'}",
                 (now - window, creator) if creator else (now - window,),
@@ -289,7 +250,7 @@ def create(
             return _task(conn, existing), False
 
         task_id = cur.lastrowid
-        # Цикл собрать нельзя: на новую задачу ещё никто не ссылается.
+        # No cycle can form: nothing references a brand new task yet.
         for dep in wanted_deps:
             conn.execute(
                 "INSERT OR IGNORE INTO task_deps (task_id, depends_on_id) VALUES (?, ?)", (task_id, dep)
@@ -306,7 +267,7 @@ def create(
         return _task(conn, _fetch(conn, task_id)), True
 
 
-# ──────────────────────────────── чтение ─────────────────────────────────
+# ──────────────────────────────── reading ────────────────────────────────
 
 
 def get(task_id: int) -> Task | None:
@@ -316,13 +277,33 @@ def get(task_id: int) -> Task | None:
 
 
 def events(task_id: int, limit: int = 200) -> list[TaskEvent]:
-    """Журнал переходов задачи, от старых к новым."""
+    """The transition journal of one task, oldest first."""
     limit = max(1, min(int(limit), MAX_LIMIT))
     with database.reading() as conn:
         rows = conn.execute(
             "SELECT * FROM task_events WHERE task_id = ? ORDER BY id LIMIT ?", (task_id, limit)
         ).fetchall()
     return [_event(r) for r in rows]
+
+
+def events_after(cursor: int = 0, limit: int = 200) -> list[TaskEvent]:
+    """The whole journal, starting after the given entry number.
+
+    Lossless reconnection rests on this: a client remembers the number of the
+    last event it saw and asks to continue from there.
+    """
+    limit = max(1, min(int(limit), MAX_LIMIT))
+    with database.reading() as conn:
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE id > ? ORDER BY id LIMIT ?", (int(cursor), limit)
+        ).fetchall()
+    return [_event(r) for r in rows]
+
+
+def last_event_id() -> int:
+    with database.reading() as conn:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS last FROM task_events").fetchone()
+    return row["last"]
 
 
 def list_tasks(
@@ -336,11 +317,12 @@ def list_tasks(
     before_id: int | None = None,
     limit: int = 50,
 ) -> list[TaskSummary]:
-    """Список, свежие первыми. Без `result` — за ним идут в get().
+    """The list, newest first. No `result` — that is what get() is for.
 
-    `before_id` — курсор для подгрузки: следующая страница это всё, что старше
-    последней показанной задачи. Курсор по `id`, а не смещение: пока листают,
-    в очередь прилетают новые задачи, и смещение начало бы пропускать строки.
+    `before_id` is the paging cursor: the next page is everything older than
+    the last task shown. A cursor over `id` rather than an offset, because new
+    tasks keep arriving while somebody scrolls, and an offset would start
+    skipping rows.
     """
     where: list[str] = []
     args: list[Any] = []
@@ -389,11 +371,11 @@ def list_tasks(
         return [_summary(r) for r in conn.execute(sql, args)]
 
 
-# ─────────────────────────── изменение состояния ──────────────────────────
+# ─────────────────────────── changing state ──────────────────────────────
 
 
 def _unblock_dependents(conn: sqlite3.Connection, task_id: int, now: float) -> list[int]:
-    """Предшественник закрыт успешно — снимаем блокировку с тех, кому больше нечего ждать."""
+    """A predecessor closed successfully: unblock whoever has nothing left to wait for."""
     rows = conn.execute(
         """
         SELECT t.id FROM tasks t
@@ -414,7 +396,7 @@ def _unblock_dependents(conn: sqlite3.Connection, task_id: int, now: float) -> l
 
 
 def _block_dependents(conn: sqlite3.Connection, task_id: int, reason: str, now: float) -> list[int]:
-    """Предшественник провалился или отменён — ждущие его больше не поедут сами."""
+    """A predecessor failed or was cancelled: its waiters will not move on their own."""
     rows = conn.execute(
         "SELECT t.id FROM tasks t JOIN task_deps d ON d.task_id = t.id "
         " WHERE d.depends_on_id = ? AND t.status = 'pending'",
@@ -434,20 +416,30 @@ def set_status(
     result: Any = None,
     if_status: Status | str | None = None,
     actor: ActorId | None = None,
+    session_id: str | None = None,
+    force: bool = False,
 ) -> tuple[Outcome, Task | None]:
-    """Сменить статус, при необходимости приложив результат.
+    """Change the status, optionally attaching a result.
 
-    if_status делает вызов compare-and-set: запись проходит только если задача
-    всё ещё в этом статусе. Так двое не доделывают одну задачу.
+    **Compare-and-set is on by default.** With no `if_status` the server fills
+    in `in_progress`: the only state an executor may report from. A forgotten
+    `if_status` no longer breaks invariants in silence; an unconditional write
+    is an explicit `force`, and that is a human acting from the dashboard, not
+    an agent overlooking a parameter.
 
-    actor — кто меняет. Если задача в работе у другого исполнителя, придёт
-    not_owner: агент не должен закрывать чужую работу по ошибке.
+    `actor` is who is writing. A task held by somebody else answers not_owner:
+    an agent must not close another's work by mistake.
 
-    Если задача провалена, но попытки ещё есть (`max_attempts`), она не
-    остаётся в failed, а возвращается в очередь с паузой — это и есть ретрай.
+    When a task fails but attempts remain (`max_attempts`), it does not stay
+    failed — it returns to the queue after a pause. That is the retry.
     """
     new_status = _status(status)
-    expected = _status(if_status, "if_status") if if_status is not None else None
+    if if_status is not None:
+        expected: Status | None = _status(if_status, "if_status")
+    elif force:
+        expected = None
+    else:
+        expected = Status.in_progress
     who = _actor(actor, "actor")
     payload = _dump(result, "result") if result is not None else None
 
@@ -457,8 +449,15 @@ def set_status(
             return Outcome.not_found, None
         if expected is not None and row["status"] != expected.value:
             return Outcome.status_conflict, _task(conn, row)
+        # Finishing releases the session: otherwise a human cancels a task and a
+        # late agent silently overwrites that cancellation with its own done.
+
         if who is not None and row["status"] == Status.in_progress.value and row["assignee_id"] not in (None, who):
             return Outcome.not_owner, _task(conn, row)
+        # Fencing: a task is held by one instance of an agent, not by its name.
+        # A zombie on an old session is refused even when the name matches.
+        if session_id is not None and row["session_id"] is not None and row["session_id"] != session_id:
+            return Outcome.stale_session, _task(conn, row)
 
         now = time.time()
         retrying = (
@@ -487,10 +486,11 @@ def set_status(
             """
             UPDATE tasks
                SET status = ?, result = COALESCE(?, result), updated_at = ?,
-                   lease_expires = CASE WHEN ? THEN NULL ELSE lease_expires END
+                   lease_expires = CASE WHEN ? THEN NULL ELSE lease_expires END,
+                   session_id = CASE WHEN ? THEN NULL ELSE session_id END
              WHERE id = ?
             """,
-            (new_status.value, payload, now, new_status in TERMINAL, task_id),
+            (new_status.value, payload, now, new_status in TERMINAL, new_status in TERMINAL, task_id),
         )
         _log(conn, task_id, "status", actor=who or row["assignee_id"], from_status=row["status"],
              to_status=new_status.value,
@@ -505,40 +505,72 @@ def set_status(
         return Outcome.updated, _task(conn, _fetch(conn, task_id))
 
 
-def claim(assignee_id: ActorId, project: str | None = None, lease_s: float | None = None) -> Task | None:
-    """Атомарно забрать одну pending-задачу и перевести её в in_progress.
+def claim(
+    assignee_id: ActorId,
+    project: str | None = None,
+    lease_s: float | None = None,
+    session_id: str | None = None,
+    allowed_projects: Sequence[str] | None = None,
+) -> Task | None:
+    """Atomically take one pending task and move it to in_progress.
 
-    Порядок: сначала адресованные этому исполнителю, потом общий пул; внутри —
-    по убыванию приоритета, при равном приоритете FIFO.
+    Dispatch order is a contract, not an implementation detail:
+    `priority` descending → addressed before the pool → FIFO by `id`.
 
-    Не выдаются: задачи с неистёкшей паузой после провала и те, у которых
-    остались незакрытые зависимости.
+    Priority comes first on purpose: otherwise a low-priority task addressed to
+    an agent would overtake an urgent one from the pool, and urgency would stop
+    meaning anything. Starvation is possible and that is a deliberate choice —
+    a stream of high-priority work can hold off the low-priority indefinitely.
 
-    `lease_s` — срок аренды. По истечении задача вернётся в очередь сама,
-    если исполнитель не продлил её heartbeat-ом. `lease_s=0` — без аренды.
+    Never handed out: tasks still inside their post-failure pause, and tasks
+    whose dependencies are not closed.
+
+    `lease_s` is the lease length. When it expires the task returns to the
+    queue on its own unless the executor renewed it. `lease_s=0` means none.
+
+    Inside a session no lease is set at all: the task is held for as long as
+    the session lives. That lifts heartbeats off the model, which cannot renew
+    anything while a ten-minute build runs, and puts them on the transport,
+    which is a separate living process.
     """
     assignee = _actor(assignee_id, "assignee_id")
     if assignee is None:
         raise TaskError(Outcome.validation_error, "assignee_id обязателен для захвата задачи")
     scope = _actor(project, "project")
-    lease = _lease(lease_s)
+    # Inside a session no lease is needed: the session holds it, and the
+    # transport is what renews the session.
+    lease = (float(lease_s) if lease_s is not None else 0.0) if session_id else _lease(lease_s)
     now = time.time()
+
+    allowed = sorted({str(p) for p in allowed_projects}) if allowed_projects is not None else None
+    if allowed is not None and scope is not None and scope not in allowed:
+        raise TaskError(Outcome.forbidden, f"проект {scope} вне скоупа ключа")
+
+    scope_sql = ""
+    params: dict[str, Any] = {"me": assignee, "scope": scope, "now": now}
+    if allowed is not None and scope is None:
+        # A scoped key takes from its own projects — and from the shared pool.
+        names = {f"p{i}": name for i, name in enumerate(allowed)}
+        params.update(names)
+        listed = ", ".join(f":{k}" for k in names) or "NULL"
+        scope_sql = f" AND (t.project IS NULL OR t.project IN ({listed}))"
 
     with database.transaction() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT id FROM tasks AS t
              WHERE t.status = 'pending'
                AND (t.assignee_id IS NULL OR t.assignee_id = :me)
                AND (:scope IS NULL OR t.project = :scope)
+               {scope_sql}
                AND (t.retry_after IS NULL OR t.retry_after <= :now)
                AND NOT EXISTS (
                      SELECT 1 FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id
                       WHERE d.task_id = t.id AND p.status <> 'done')
-             ORDER BY (t.assignee_id IS NULL), t.priority DESC, t.id
+             ORDER BY t.priority DESC, (t.assignee_id IS NULL), t.id
              LIMIT 1
             """,
-            {"me": assignee, "scope": scope, "now": now},
+            params,
         ).fetchone()
         if row is None:
             return None
@@ -547,10 +579,10 @@ def claim(assignee_id: ActorId, project: str | None = None, lease_s: float | Non
             """
             UPDATE tasks
                SET status = 'in_progress', assignee_id = ?, attempts = attempts + 1,
-                   lease_expires = ?, retry_after = NULL, updated_at = ?
+                   lease_expires = ?, session_id = ?, retry_after = NULL, updated_at = ?
              WHERE id = ? AND status = 'pending'
             """,
-            (assignee, (now + lease) if lease else None, now, row["id"]),
+            (assignee, (now + lease) if lease else None, session_id, now, row["id"]),
         )
         if cur.rowcount == 0:
             return None
@@ -558,15 +590,22 @@ def claim(assignee_id: ActorId, project: str | None = None, lease_s: float | Non
         taken = _fetch(conn, row["id"])
         _log(conn, row["id"], "claimed", actor=assignee, from_status="pending",
              to_status="in_progress",
-             detail={"attempt": taken["attempts"], "lease_s": lease or None}, at=now)
+             detail={"attempt": taken["attempts"], "lease_s": lease or None,
+                     "session": session_id}, at=now)
         return _task(conn, taken)
 
 
-def heartbeat(task_id: int, assignee_id: ActorId, lease_s: float | None = None) -> tuple[Outcome, Task | None]:
-    """Продлить аренду. Исполнитель говорит «я жив и всё ещё делаю эту задачу».
+def heartbeat(
+    task_id: int,
+    assignee_id: ActorId,
+    lease_s: float | None = None,
+    session_id: str | None = None,
+) -> tuple[Outcome, Task | None]:
+    """Extend the lease: the executor says "I am alive and still on this task".
 
-    Без этого долгая задача вернётся в очередь по истечении аренды — что и
-    нужно, когда агент умер, и чего не нужно, когда он просто долго работает.
+    Without it a long task returns to the queue when the lease expires — which
+    is what you want when the agent died, and not what you want when it is
+    simply taking its time.
     """
     who = _actor(assignee_id, "assignee_id")
     lease = _lease(lease_s)
@@ -580,6 +619,8 @@ def heartbeat(task_id: int, assignee_id: ActorId, lease_s: float | None = None) 
             return Outcome.status_conflict, _task(conn, row)
         if row["assignee_id"] != who:
             return Outcome.not_owner, _task(conn, row)
+        if session_id is not None and row["session_id"] is not None and row["session_id"] != session_id:
+            return Outcome.stale_session, _task(conn, row)
 
         conn.execute(
             "UPDATE tasks SET lease_expires = ?, updated_at = ? WHERE id = ?",
@@ -589,22 +630,33 @@ def heartbeat(task_id: int, assignee_id: ActorId, lease_s: float | None = None) 
 
 
 def reap_expired() -> list[int]:
-    """Вернуть в очередь задачи с истёкшей арендой.
+    """Return tasks whose lease expired, or whose session died, to the queue.
 
-    Это то, что отличает «видно, что залипло» от «само починилось»: агент умер,
-    аренда истекла — задача снова доступна. Если попытки исчерпаны, задача
-    уходит в failed, иначе её будут воскрешать бесконечно.
+    This is the difference between "you can see it is stuck" and "it fixed
+    itself": the agent died, the lease ran out, the work is available again.
+    When attempts are exhausted the task goes to failed instead, or it would be
+    resurrected forever.
     """
     now = time.time()
     requeued: list[int] = []
+    ttl = settings.session_ttl_s()
 
     with database.transaction() as conn:
         rows = conn.execute(
             """
-            SELECT id, assignee_id, attempts, max_attempts FROM tasks
-             WHERE status = 'in_progress' AND lease_expires IS NOT NULL AND lease_expires <= ?
+            SELECT t.id, t.assignee_id, t.attempts, t.max_attempts,
+                   t.session_id IS NOT NULL AS by_session
+              FROM tasks t
+              LEFT JOIN agent_sessions s ON s.id = t.session_id
+             WHERE t.status = 'in_progress'
+               AND (
+                     (t.lease_expires IS NOT NULL AND t.lease_expires <= :now)
+                     -- The session died: release everything it held at once.
+                     OR (t.session_id IS NOT NULL
+                         AND (s.id IS NULL OR s.closed_at IS NOT NULL OR s.renewed_at <= :stale))
+                   )
             """,
-            (now,),
+            {"now": now, "stale": now - ttl},
         ).fetchall()
 
         for row in rows:
@@ -613,7 +665,7 @@ def reap_expired() -> list[int]:
                 conn.execute(
                     """
                     UPDATE tasks
-                       SET status = 'failed', lease_expires = NULL, updated_at = ?,
+                       SET status = 'failed', lease_expires = NULL, session_id = NULL, updated_at = ?,
                            result = COALESCE(result, ?)
                      WHERE id = ?
                     """,
@@ -626,26 +678,53 @@ def reap_expired() -> list[int]:
                 conn.execute(
                     """
                     UPDATE tasks
-                       SET status = 'pending', assignee_id = NULL, lease_expires = NULL, updated_at = ?
+                       SET status = 'pending', assignee_id = NULL, lease_expires = NULL,
+                           session_id = NULL, updated_at = ?
                      WHERE id = ?
                     """,
                     (now, row["id"]),
                 )
                 _log(conn, row["id"], "reaped", actor="system", from_status="in_progress",
-                     to_status="pending", detail={"held_by": row["assignee_id"], "attempts": row["attempts"]}, at=now)
+                     to_status="pending",
+                     detail={"held_by": row["assignee_id"], "attempts": row["attempts"],
+                             "reason": "сессия умерла" if row["by_session"] else "аренда истекла"}, at=now)
                 requeued.append(row["id"])
 
     return requeued
 
 
-# ──────────────────────────────── сводки ─────────────────────────────────
+# ──────────────────────────────── summaries ──────────────────────────────
+
+
+def trim_journal() -> int:
+    """Trim the journal. It is append-only, so it grows forever — which SQLite
+    tolerates for a long time, but not indefinitely.
+
+    Entries of closed tasks are dropped by age; the journal of a live task is
+    never touched however old it is, because that is what an ongoing incident
+    is reconstructed from.
+    """
+    keep = settings.journal_keep_days()
+    if keep <= 0:
+        return 0
+    cutoff = time.time() - keep * 86_400
+    with database.transaction() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM task_events
+             WHERE at < ?
+               AND task_id IN (SELECT id FROM tasks WHERE status IN ('done', 'failed', 'cancelled'))
+            """,
+            (cutoff,),
+        )
+        return cur.rowcount
 
 
 def stats(project: str | None = None, unscoped: bool = False) -> dict[str, int]:
-    """Счётчики по статусам для чипов дэшборда и /api/stats.
+    """Per-status counters for the dashboard chips and /api/stats.
 
-    Считаются внутри текущего скоупа: иначе при выбранном проекте чипы врут —
-    показывают «все 8», когда в списке четыре задачи.
+    Counted inside the current scope: otherwise, with a project selected, the
+    chips lie — "all 8" above a list of four.
     """
     where, args = "", []
     if unscoped:
@@ -664,7 +743,7 @@ def stats(project: str | None = None, unscoped: bool = False) -> dict[str, int]:
 
 
 def projects() -> list[str]:
-    """Известные проекты — для фильтров дэшборда и подсказок в форме."""
+    """Known projects, for the dashboard filters and the new-task form."""
     with database.reading() as conn:
         rows = conn.execute(
             "SELECT project, COUNT(*) AS n FROM tasks WHERE project IS NOT NULL GROUP BY project ORDER BY project"
@@ -673,7 +752,7 @@ def projects() -> list[str]:
 
 
 def assignees() -> list[str]:
-    """Известные исполнители — для выпадающего списка фильтров."""
+    """Known assignees, for the filter dropdown."""
     with database.reading() as conn:
         rows = conn.execute(
             "SELECT DISTINCT assignee_id FROM tasks WHERE assignee_id IS NOT NULL ORDER BY assignee_id"

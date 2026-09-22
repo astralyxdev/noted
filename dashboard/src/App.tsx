@@ -9,6 +9,7 @@ import { Stat } from '@/components/ui/stat'
 import { useToast } from '@/components/ui/toast'
 import { api, type Status } from '@/api'
 import { ConnectButton, ConnectDialog } from '@/parts/ConnectDialog'
+import { LoginScreen } from '@/parts/LoginScreen'
 import { NewTaskDialog } from '@/parts/NewTaskDialog'
 import { FilterBar } from '@/parts/FilterBar'
 import { TaskDialog } from '@/parts/TaskDialog'
@@ -39,7 +40,7 @@ export function App() {
   const [connecting, setConnecting] = useState(false)
   const [revision, setRevision] = useState(0)
 
-  const { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh } =
+  const { tasks, stats, projects, assignees, error, locked, pending, more, loadingMore, loadMore, refresh } =
     useDashboard(filters)
   const { toast } = useToast()
   useTicker()
@@ -79,6 +80,8 @@ export function App() {
     filters.status.length > 0 || filters.project !== null || filters.assignee !== null || filters.stale !== null
   const stuck = tasks.filter(isStale).length
 
+  if (locked) return <LoginScreen onEntered={reload} />
+
   return (
     <div className="bg-background text-foreground min-h-dvh">
       <header className="border-border bg-background sticky top-0 z-20 border-b">
@@ -89,14 +92,14 @@ export function App() {
             className="focus-visible:ring-ring flex items-center gap-2.5 rounded-lg px-1 py-1 focus-visible:ring-2 focus-visible:outline-none"
           >
             <Wordmark className="h-5" />
-            {/* Вертикальный разделитель по умолчанию тянется во всю высоту
-                (self-stretch), из-за чего не совпадает с центром соседей. */}
+            {/* A vertical separator stretches full height by default
+                (self-stretch), which puts it off the centre of its siblings. */}
             <Separator orientation="vertical" className="h-5 self-center" />
             <span className="text-[0.95rem] font-medium tracking-tight">Noted</span>
           </a>
 
           <div className="flex items-center gap-3">
-            {/* Пока связь есть, индикатор молчит: сообщать не о чем. */}
+            {/* While the connection holds the indicator stays quiet: nothing to report. */}
             <span
               className={cn(
                 'text-muted-foreground flex items-center gap-1.5 font-mono text-xs',
@@ -164,7 +167,7 @@ export function App() {
           onCompose={() => setComposing(true)}
         />
 
-        {/* Якорь подгрузки: пересёк экран — тянем следующую порцию. */}
+        {/* The loading anchor: once it crosses the screen, pull the next page. */}
         {more && <div ref={bottom} aria-hidden="true" className="h-1" />}
 
         {loadingMore && (

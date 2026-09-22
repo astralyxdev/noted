@@ -1,4 +1,4 @@
-"""Зависимости и приоритет: что выдавать и в каком порядке."""
+"""Dependencies and priority: what is handed out, and in what order."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def test_task_waits_for_its_dependencies():
     assert service.get(second.id).depends_on == [first.id]
 
     taken = service.claim("agent-1")
-    assert taken.id == first.id, "задача с незакрытой зависимостью не выдаётся"
+    assert taken.id == first.id, "a task with an open dependency is not handed out"
     assert service.claim("agent-2") is None
 
     service.set_status(first.id, "done")
@@ -28,9 +28,10 @@ def test_failed_dependency_blocks_and_success_unblocks():
 
     service.claim("agent-1")
     service.set_status(first.id, "failed")
-    assert service.get(second.id).status.value == "blocked", "ждать больше нечего — это видно в статусе"
+    assert service.get(second.id).status.value == "blocked", "nothing left to wait for, and it shows"
 
-    service.set_status(first.id, "done")
+    # Manual intervention: a human reopened the failed task and finished it.
+    service.set_status(first.id, "done", force=True)
     assert service.get(second.id).status.value == "pending"
     assert service.claim("agent-2").id == second.id
 
@@ -48,16 +49,18 @@ def test_priority_beats_fifo_inside_the_pool():
     assert [service.claim("agent-1").id for _ in range(3)] == [high.id, middle.id, low.id]
 
 
-def test_addressed_tasks_still_come_before_the_pool():
-    """Приоритет сортирует внутри группы, но не отменяет адресность."""
-    service.create({"title": "срочная из пула"}, priority=99)
+def test_dispatch_order_is_priority_then_addressing_then_fifo():
+    """Dispatch order is a contract. Priority comes first: otherwise a trifle
+    addressed to me personally would overtake urgent work from the pool."""
+    urgent, _ = service.create({"title": "срочная из пула"}, priority=99)
     mine, _ = service.create({"title": "моя обычная"}, assignee_id="agent-1")
+    pooled, _ = service.create({"title": "обычная из пула"})
 
-    assert service.claim("agent-1").id == mine.id
+    assert [service.claim("agent-1").id for _ in range(3)] == [urgent.id, mine.id, pooled.id]
 
 
 def test_list_shows_how_many_dependencies_are_still_open():
-    """Задача в pending, которую нельзя взять, должна быть отличима на глаз."""
+    """A pending task nobody can take must be tellable apart at a glance."""
     first, _ = service.create({"title": "сначала"})
     second, _ = service.create({"title": "потом"}, depends_on=[first.id])
 

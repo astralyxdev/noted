@@ -1,4 +1,4 @@
-"""Тесты JSON-API: по кейсу на каждый outcome."""
+"""The JSON API: a case per outcome."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def test_create_returns_201_created(client):
     assert payload["ok"] is True
     assert payload["outcome"] == "created"
     assert payload["task"]["status"] == "pending"
-    assert payload["task"]["created_by"] == "42", "int-идентификатор нормализуется в строку"
+    assert payload["task"]["created_by"] == "42", "an int id is normalised to a string"
 
 
 def test_repeated_key_returns_exists(client):
@@ -80,7 +80,7 @@ def test_claim_then_empty(client):
     empty = client.post("/api/tasks/claim", json={"assignee_id": "agent-1"}).json()
     assert empty["outcome"] == "empty"
     assert empty["task"] is None
-    assert empty["ok"] is True, "пустая очередь — не ошибка"
+    assert empty["ok"] is True, "an empty queue is not an error"
 
 
 def test_unknown_status_returns_422_validation_error(client):
@@ -117,7 +117,7 @@ def test_token_guards_api_but_not_health(client, monkeypatch):
 
     allowed = client.get("/api/tasks", headers={"X-Noted-Token": "s3cret"})
     assert allowed.status_code == 200
-    assert client.get("/healthz").status_code == 200, "healthz без токена"
+    assert client.get("/healthz").status_code == 200, "healthz needs no token"
 
 
 def test_project_scope_through_the_api(client):
@@ -137,7 +137,7 @@ def test_project_scope_through_the_api(client):
 
 
 async def test_long_poll_wakes_up_on_a_new_task():
-    """Ради этого claim и держит соединение: агент не крутит опрос."""
+    """This is why claim holds the connection: so agents never poll."""
     transport = httpx.ASGITransport(app=main.create_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         waiting = asyncio.create_task(
@@ -215,7 +215,7 @@ def test_create_accepts_priority_attempts_and_dependencies(client):
     assert second["max_attempts"] == 3
 
     claimed = client.post("/api/tasks/claim", json={"assignee_id": "agent-1"}).json()
-    assert claimed["task"]["id"] == first["id"], "зависимая задача ждёт, несмотря на приоритет"
+    assert claimed["task"]["id"] == first["id"], "a dependent task waits, priority or not"
 
 
 def test_flood_is_answered_with_429(client, monkeypatch):

@@ -1,12 +1,12 @@
 @import './styles/astralyx.css';
 
 /*
- * Моргание логотипа Astralyx. Перенесено из ui-kit: два быстрых моргания,
- * затем длинное, в котором левый глаз прикрывается лишь на 22% — подмигивание
- * есть в оригинальной анимации, это не случайность.
+ * The Astralyx logo blink, carried over from the ui-kit: two quick blinks and
+ * then a longer one where the left eye only closes to 22% — the wink is in the
+ * original animation, not an accident.
  *
- * `transform-box: view-box` разрешает transform-origin в единицах viewBox,
- * поэтому каждое веко поворачивается на своей петле, а не вокруг угла SVG.
+ * `transform-box: view-box` resolves transform-origin in viewBox units, so each
+ * eyelid pivots on its own hinge rather than around the corner of the SVG.
  */
 .ax-eyelid-l,
 .ax-eyelid-r {

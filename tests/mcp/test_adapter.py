@@ -1,4 +1,4 @@
-"""Тесты MCP-адаптера: инструменты ходят в живое ядро по HTTP."""
+"""The stdio adapter: its tools reach a live core over HTTP."""
 
 from __future__ import annotations
 
@@ -53,4 +53,4 @@ async def test_dead_core_reports_api_unavailable(monkeypatch):
 
     message = str(err.value)
     assert "api_unavailable" in message
-    assert "noted-api" in message, "в сообщении должно быть, что именно запустить"
+    assert "noted-api" in message, "the message must say what to start"

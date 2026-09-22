@@ -1,4 +1,4 @@
-"""Тесты домена задач. Приложение не поднимается — сервис от FastAPI не зависит."""
+"""The task domain. No application is started: the service does not need FastAPI."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def test_key_makes_create_idempotent():
     assert created_first is True
     assert created_second is False
     assert second.id == first.id
-    assert second.task == {"title": "раз"}, "существующая задача не перезаписывается"
+    assert second.task == {"title": "раз"}, "the existing task is not overwritten"
     assert len(service.list_tasks()) == 1
 
 
@@ -57,7 +57,7 @@ def test_compare_and_set_blocks_the_second_finisher():
 
     outcome, current = service.set_status(task.id, "failed", if_status="in_progress")
     assert outcome is Outcome.status_conflict
-    assert current.status.value == "done", "в конфликте возвращается актуальное состояние"
+    assert current.status.value == "done", "a conflict returns the current state"
 
 
 def test_set_status_reports_missing_task():
@@ -68,14 +68,14 @@ def test_set_status_reports_missing_task():
 
 def test_result_is_kept_when_status_changes_without_it():
     task, _ = service.create({"n": 1})
-    service.set_status(task.id, "failed", result={"error": "таймаут"})
-    service.set_status(task.id, "pending")
+    service.set_status(task.id, "failed", result={"error": "таймаут"}, force=True)
+    service.set_status(task.id, "pending", force=True)
     assert service.get(task.id).result == {"error": "таймаут"}
 
 
 def test_list_filters():
     done, _ = service.create({"n": 1})
-    service.set_status(done.id, "done")
+    service.set_status(done.id, "done", force=True)
     pending, _ = service.create({"n": 2}, assignee_id="agent-1")
     pooled, _ = service.create({"n": 3})
 
@@ -83,12 +83,12 @@ def test_list_filters():
     assert [t.id for t in service.list_tasks(status=["done", "pending"])][0] == pooled.id
     assert [t.id for t in service.list_tasks(assignee_id="agent-1")] == [pending.id]
     assert [t.id for t in service.list_tasks(unassigned=True)] == [pooled.id, done.id]
-    assert service.list_tasks()[0].id == pooled.id, "свежие первыми"
+    assert service.list_tasks()[0].id == pooled.id, "newest first"
 
 
 def test_list_omits_result_but_get_returns_it():
     task, _ = service.create({"n": 1})
-    service.set_status(task.id, "done", result={"big": "payload"})
+    service.set_status(task.id, "done", result={"big": "payload"}, force=True)
 
     assert not hasattr(service.list_tasks()[0], "result")
     assert service.get(task.id).result == {"big": "payload"}
@@ -120,8 +120,8 @@ def test_bad_input_is_rejected():
 
 
 def test_concurrent_claims_never_hand_out_the_same_task():
-    """Главный инвариант: сколько бы агентов ни забирали одновременно,
-    каждая задача достаётся ровно одному."""
+    """The core invariant: however many agents claim at once, every task goes
+    to exactly one of them."""
     total = 40
     for n in range(total):
         service.create({"n": n})
@@ -146,7 +146,7 @@ def test_concurrent_claims_never_hand_out_the_same_task():
         t.join(timeout=30)
 
     assert len(claimed) == total
-    assert len(set(claimed)) == total, "одна задача досталась двоим"
+    assert len(set(claimed)) == total, "one task went to two agents"
     assert service.stats()["in_progress"] == total
 
 
@@ -161,7 +161,7 @@ def test_project_scopes_the_list():
 
 
 def test_claim_inside_a_project_never_reaches_outside_it():
-    """Скоуп строгий: назвав проект, агент не возьмёт ни чужую задачу, ни задачу без проекта."""
+    """The scope is strict: naming a project excludes both foreign and unscoped tasks."""
     service.create({"n": 1}, project="abot")
     service.create({"n": 2})
 
@@ -171,12 +171,12 @@ def test_claim_inside_a_project_never_reaches_outside_it():
     assert taken.task == {"n": 1}
     assert taken.project == "abot"
 
-    assert service.claim("agent-1", project="abot") is None, "задача без проекта в скоуп не попадает"
-    assert service.claim("agent-1").task == {"n": 2}, "без скоупа берётся что угодно"
+    assert service.claim("agent-1", project="abot") is None, "an unscoped task is not in the scope"
+    assert service.claim("agent-1").task == {"n": 2}, "without a scope anything may be taken"
 
 
 def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
-    """База, созданная до появления скоупа, не должна разваливаться."""
+    """A database created before scopes existed must not fall apart."""
     import sqlite3
 
     from api.models import database
@@ -209,8 +209,8 @@ def test_old_database_gets_the_project_column(tmp_path, monkeypatch):
 
 
 def test_cursor_walks_the_whole_list_without_gaps():
-    """Курсор по id, а не смещение: пока листают, прилетают новые задачи,
-    и смещение начало бы пропускать строки."""
+    """A cursor over id rather than an offset: new tasks keep arriving while
+    somebody scrolls, and an offset would start skipping rows."""
     made = [service.create({"n": n})[0].id for n in range(10)]
 
     page, seen = service.list_tasks(limit=4), []
@@ -220,7 +220,7 @@ def test_cursor_walks_the_whole_list_without_gaps():
 
     assert seen == sorted(made, reverse=True)
 
-    # новая задача во время листания не сдвигает уже показанное
+    # a task created mid-scroll does not shift what has already been shown
     first = service.list_tasks(limit=4)
     service.create({"n": 100})
     following = service.list_tasks(before_id=first[-1].id, limit=4)

@@ -1,11 +1,10 @@
-"""Точка входа ядра: сборка FastAPI и запуск uvicorn."""
+"""The core entry point: build the FastAPI application and run uvicorn."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
-import os
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -17,9 +16,11 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from api import settings
 from api.models.envelope import Outcome, body, envelope
 from api.routes import live_router, tasks_router
 from api.routes.mcp import build as build_mcp
+from api.services import agents as agents_service
 from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events as task_events
@@ -29,21 +30,21 @@ from api.utils.authorization import middleware as token_middleware
 
 log = logging.getLogger("noted")
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8787
-DEFAULT_REAP_INTERVAL_S = 15.0
-
-
 async def reaper() -> None:
-    """Возвращает в очередь задачи, чью аренду никто не продлил.
+    """Returns tasks whose lease nobody renewed back to the queue.
 
-    Без этого `stale_seconds` даёт только обнаружение: упавший агент оставляет
-    задачу висеть навсегда. Здесь она чинится сама.
+    Without this `stale_seconds` only gives detection: a crashed agent leaves
+    its task hanging forever. Here it repairs itself.
     """
-    interval = float(os.environ.get("NOTED_REAP_INTERVAL_S") or DEFAULT_REAP_INTERVAL_S)
+    interval = settings.reap_interval_s()
     while True:
         await asyncio.sleep(interval)
         try:
+            # Bury the sessions nobody renewed first, so their tasks are freed
+            # in the same pass.
+            closed = await run_service(agents_service.expire_sessions)
+            if closed:
+                log.info("сессии закрыты по тишине: %s", closed)
             requeued = await run_service(tasks_service.reap_expired)
         except Exception:  # noqa: BLE001 — сборщик не должен умирать от одной ошибки
             log.exception("сборщик аренд споткнулся")
@@ -52,16 +53,18 @@ async def reaper() -> None:
             log.info("аренда истекла, задачи вернулись в очередь: %s", requeued)
             await task_events.notify_new_task()
 
+        trimmed = await run_service(tasks_service.trim_journal)
+        if trimmed:
+            log.info("журнал подрезан: %s записей закрытых задач", trimmed)
+
 
 def ui_dir() -> Path:
-    """Собранный дэшборд. В образе он лежит рядом, локально — в dashboard/dist."""
-    raw = os.environ.get("NOTED_UI_DIR")
-    return Path(raw) if raw else Path(__file__).resolve().parent / "dashboard" / "dist"
+    return settings.ui_dir()
 
 
 def create_app() -> FastAPI:
-    # Свой MCP-сервер на каждое приложение: менеджер сессий транспорта
-    # запускается ровно один раз за свою жизнь.
+    # One MCP server per application: the transport session manager may be run
+    # exactly once in its lifetime.
     mcp = build_mcp()
 
     @contextlib.asynccontextmanager
@@ -84,7 +87,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(token_middleware)
     app.include_router(tasks_router)
     app.include_router(live_router)
-    # MCP по HTTP на том же порту: агенту не нужен отдельный процесс-адаптер.
+    # MCP over HTTP on the same port: no separate adapter process is needed.
     app.mount("/mcp", mcp.streamable_http_app(streamable_http_path="/"))
 
     @app.get("/healthz", include_in_schema=False)
@@ -97,15 +100,15 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
-        # Перекрываем формат FastAPI: агент должен получать тот же конверт,
-        # что и в остальных случаях, а не чужую форму ответа.
+        # FastAPI's own format is overridden: an agent must get the same
+        # envelope as everywhere else, not somebody else's shape of answer.
         first = exc.errors()[0] if exc.errors() else {}
         where = ".".join(str(p) for p in first.get("loc", ())[1:]) or "тело запроса"
         return respond(envelope(Outcome.validation_error, f"{where}: {first.get('msg', 'некорректный запрос')}"))
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException):
-        # Код ответа сохраняем как есть: подменять 405 на 500 — врать клиенту.
+        # The status code is preserved: turning a 405 into a 500 lies to the client.
         if exc.status_code == 404:
             outcome = Outcome.not_found
         elif exc.status_code in (401, 403):
@@ -125,8 +128,8 @@ def create_app() -> FastAPI:
         log.exception("необработанная ошибка [%s] %s %s", incident, request.method, request.url.path)
         return respond(envelope(Outcome.internal_error, f"внутренняя ошибка, см. лог: {incident}"))
 
-    # Дэшборд монтируется последним: он забирает корень, но только те пути,
-    # которые не разобрали роутеры выше.
+    # The dashboard is mounted last: it takes the root, but only the paths the
+    # routers above did not claim.
     dist = ui_dir()
     if (dist / "index.html").exists():
         app.mount("/", StaticFiles(directory=str(dist), html=True), name="dashboard")
@@ -141,11 +144,12 @@ app = create_app()
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    host = os.environ.get("NOTED_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("NOTED_PORT", DEFAULT_PORT))
-    # Приложение передаётся объектом, а не строкой импорта: это гарантирует один
-    # процесс. Несколько воркеров = несколько писателей в SQLite = ровно та
-    # межпроцессная гонка, ради устранения которой ядро и вынесено в сервис.
+    host = settings.host()
+    port = settings.port()
+    # The application is passed as an object rather than an import string,
+    # which guarantees a single process. Several workers would mean several
+    # writers to SQLite — exactly the cross-process race this service exists
+    # to remove.
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

@@ -1,18 +1,19 @@
-"""Соединение с SQLite и схема.
+"""The SQLite connection and the schema.
 
-Писатель у базы ровно один — процесс ядра. Внутри процесса запросы всё равно
-конкурентны, поэтому все операции идут через один RLock: это и есть явная
-сериализация, обещанная в SPEC.md. WAL оставлен ради внешних читателей.
+There is exactly one writer — the core process. Requests inside that process
+are still concurrent, so every operation goes through a single RLock: that is
+the explicit serialisation SPEC.md promises. WAL stays on for outside readers.
 """
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+from api import settings
 
 TABLE = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -30,21 +31,45 @@ CREATE TABLE IF NOT EXISTS tasks (
     max_attempts  INTEGER,
     retry_after   REAL,
     lease_expires REAL,
+    session_id    TEXT,                         -- which session holds the task
     created_at    REAL    NOT NULL,
     updated_at    REAL    NOT NULL
 );
 
--- Зависимости: задача не выдаётся, пока все её предшественники не done.
--- Цикл собрать нельзя по построению: связи задаются при создании, а на новую
--- задачу к этому моменту никто ещё не ссылается.
+-- Dependencies: a task is not handed out until every predecessor is done.
+-- A cycle cannot be built by construction: links are set at creation time, and
+-- nothing references a brand new task yet.
 CREATE TABLE IF NOT EXISTS task_deps (
     task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, depends_on_id)
 );
 
--- Журнал переходов: только дописывается. Текущее состояние лежит в tasks,
--- здесь — как оно таким стало, иначе разбирать инцидент будет не по чему.
+-- An agent as a principal rather than a string. The key is stored hashed: it
+-- is shown once at issue time and kept nowhere else.
+CREATE TABLE IF NOT EXISTS agents (
+    id          TEXT    PRIMARY KEY,           -- the name, and the assignee_id
+    key_hash    TEXT    NOT NULL UNIQUE,
+    projects    TEXT,                          -- JSON list; NULL means any
+    is_admin    INTEGER NOT NULL DEFAULT 0,
+    created_at  REAL    NOT NULL,
+    revoked_at  REAL
+);
+
+-- A session is one instance of an agent. The same key can run twice, and
+-- without sessions those two processes are indistinguishable. Ids are never
+-- reused.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id         TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL,
+    transport  TEXT,                           -- http | stdio, for diagnostics
+    opened_at  REAL NOT NULL,
+    renewed_at REAL NOT NULL,
+    closed_at  REAL
+);
+
+-- The transition journal: append-only. Current state lives in tasks; this is
+-- how it got there, without which an incident cannot be reconstructed.
 CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -57,8 +82,9 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 """
 
-#: Индексы создаются ПОСЛЕ миграции: на старой базе таблица уже есть, и индекс
-#: по новой колонке упадёт, если досыпать её позже.
+#: Indexes are created AFTER the migration: on an older database the table
+#: already exists, and an index over a new column fails if the column is added
+#: afterwards.
 INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_tasks_queue    ON tasks(status, assignee_id, priority, id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent   ON tasks(parent_id);
@@ -67,10 +93,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_lease    ON tasks(status, lease_expires);
 CREATE INDEX IF NOT EXISTS idx_tasks_creator  ON tasks(created_by, created_at);
 CREATE INDEX IF NOT EXISTS idx_deps_reverse   ON task_deps(depends_on_id);
 CREATE INDEX IF NOT EXISTS idx_events_task    ON task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_session  ON tasks(session_id, status);
+CREATE INDEX IF NOT EXISTS idx_sessions_alive ON agent_sessions(closed_at, renewed_at);
 """
 
-#: Колонки, добавленные после первой версии схемы. База могла быть создана
-#: раньше, поэтому CREATE TABLE IF NOT EXISTS их не добавит — досыпаем вручную.
+#: Columns added after the first version of the schema. A database may predate
+#: them, and CREATE TABLE IF NOT EXISTS will not add them, so we do it by hand.
 LATER_COLUMNS = {
     "project": "TEXT",
     "priority": "INTEGER NOT NULL DEFAULT 0",
@@ -78,6 +106,7 @@ LATER_COLUMNS = {
     "max_attempts": "INTEGER",
     "retry_after": "REAL",
     "lease_expires": "REAL",
+    "session_id": "TEXT",
 }
 
 _lock = threading.RLock()
@@ -86,12 +115,11 @@ _conn_path: Path | None = None
 
 
 def db_path() -> Path:
-    raw = os.environ.get("NOTED_DB")
-    return Path(raw).expanduser() if raw else Path.home() / ".noted" / "tasks.db"
+    return settings.database_path()
 
 
 def connection() -> sqlite3.Connection:
-    """Единственное соединение на процесс. Переоткрывается, если сменился NOTED_DB."""
+    """The single connection per process. Reopened when NOTED_DB changes."""
     global _conn, _conn_path
     with _lock:
         path = db_path()
@@ -135,8 +163,8 @@ def reading() -> Iterator[sqlite3.Connection]:
 
 @contextmanager
 def transaction() -> Iterator[sqlite3.Connection]:
-    """Запись под локом. IMMEDIATE берёт write-лок сразу, поэтому
-    read-then-write внутри остаётся атомарным."""
+    """A write under the lock. IMMEDIATE takes the write lock up front, which
+    keeps a read-then-write inside it atomic."""
     with _lock:
         conn = connection()
         conn.execute("BEGIN IMMEDIATE")

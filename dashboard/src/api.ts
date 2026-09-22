@@ -1,4 +1,4 @@
-/** Тонкий клиент к ядру. Формы ответа заданы конвертом из SPEC.md. */
+/** A thin client to the core. Response shapes come from the envelope in SPEC.md. */
 
 export const STATUSES = ['pending', 'in_progress', 'blocked', 'done', 'failed', 'cancelled'] as const
 
@@ -19,7 +19,7 @@ export type TaskSummary = {
   key: string | null
   priority: number
   attempts: number
-  /** Сколько предшественников ещё не закрыто: пока не ноль, задачу никто не заберёт. */
+  /** How many predecessors are still open: until zero, nobody can claim the task. */
   waiting_on: number
   max_attempts: number | null
   retry_after: string | null
@@ -78,8 +78,8 @@ async function call(path: string, init?: RequestInit): Promise<Envelope> {
 
   const body = (await response.json().catch(() => null)) as Envelope | null
   if (!body) throw new ApiError(`ядро ответило ${response.status} без тела`, 'internal_error')
-  // `empty` и `not_found` — штатные исходы, но для дэшборда они тоже ошибки вызова,
-  // поэтому решение принимает вызывающий: сюда долетает только ok=false.
+  // `empty` and `not_found` are normal outcomes, but the dashboard treats them
+  // as failed calls too, so only ok=false ever reaches this point.
   if (!body.ok) throw new ApiError(body.message ?? body.outcome, body.outcome)
   return body
 }
@@ -109,11 +109,19 @@ function listQuery(filters: Filters, page: PageOptions): string {
 
 export type PageOptions = {
   limit?: number
-  /** Курсор: следующая порция — всё, что старше этой задачи. */
+  /** The cursor: the next page is everything older than this task. */
   beforeId?: number
 }
 
 export const api = {
+  async login(token: string): Promise<void> {
+    await call('/api/login', { method: 'POST', body: JSON.stringify({ token }) })
+  },
+
+  async logout(): Promise<void> {
+    await call('/api/logout', { method: 'POST' })
+  },
+
   async list(filters: Filters, page: PageOptions = {}): Promise<TaskSummary[]> {
     return (await call(`/api/tasks?${listQuery(filters, page)}`)).tasks ?? []
   },
@@ -157,9 +165,11 @@ export const api = {
   },
 
   async setStatus(id: number, status: Status): Promise<Task> {
+    // A human acting from the dashboard writes unconditionally, and says so:
+    // agents get compare-and-set by default.
     const body = await call(`/api/tasks/${id}/status`, {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, force: true }),
     })
     return body.task as Task
   },

@@ -19,7 +19,7 @@ import { api } from '@/api'
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Проект из текущего фильтра — новая задача попадает в тот же скоуп. */
+  /** The project from the active filter, so a new task lands in the same scope. */
   project: string | null
   onCreated: () => void
 }
@@ -35,8 +35,8 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: Props)
   const [payloadError, setPayloadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
-  // Форма живёт только пока открыта: следующее открытие начинается с чистого листа,
-  // но проект подставляется из текущего фильтра.
+  // The form lives only while open: the next opening starts clean, except for
+  // the project, which is taken from the active filter.
   useEffect(() => {
     if (!open) return
     setTitle('')

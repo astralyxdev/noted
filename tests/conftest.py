@@ -14,9 +14,10 @@ from api.utils import events
 
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path, monkeypatch):
-    """Своя база на каждый тест и чистая Condition: тесты не видят друг друга."""
+    """A fresh database and clean Conditions per test, so tests never see each other."""
     monkeypatch.setenv("NOTED_DB", str(tmp_path / "tasks.db"))
     monkeypatch.delenv("NOTED_TOKEN", raising=False)
+    monkeypatch.delenv("NOTED_KEY", raising=False)
     database.close()
     events.reset()
     yield
@@ -31,10 +32,10 @@ def free_port() -> int:
 
 @pytest.fixture
 def live_server(monkeypatch):
-    """Настоящий uvicorn на своём порту.
+    """A real uvicorn on its own port.
 
-    Нужен там, где ASGI-транспорт в памяти не годится: потоковые ответы (SSE)
-    и проверка MCP-адаптера, который обязан ходить по реальному HTTP.
+    Needed wherever the in-memory ASGI transport will not do: streaming
+    responses (SSE) and the adapter, which must speak real HTTP.
     """
     port = free_port()
     server = uvicorn.Server(uvicorn.Config(app_factory, factory=True, host="127.0.0.1", port=port, log_level="warning"))

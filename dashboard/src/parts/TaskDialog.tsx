@@ -20,7 +20,7 @@ type Props = {
   onClose: () => void
   onStatus: (id: number, status: Status) => void
   onOpen: (id: number) => void
-  /** Меняется после каждого обновления — карточка перечитывает себя. */
+  /** Changes after every update, which makes the card re-read itself. */
   revision: number
 }
 

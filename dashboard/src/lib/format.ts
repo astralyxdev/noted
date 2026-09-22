@@ -1,7 +1,7 @@
 import type { ColorSet } from '@/lib/styles'
 import type { Status, TaskSummary } from '@/api'
 
-/** Порог, после которого in_progress считается залипшей. */
+/** Past this, an in_progress task counts as stuck. */
 export const STALE_AFTER_S = 300
 
 export const STATUS_COLOR: Record<Status, ColorSet> = {
@@ -26,8 +26,8 @@ export function at(iso: string): string {
 }
 
 /**
- * Задача, которая скорее всего брошена. При аренде это точный факт — срок
- * истёк; без аренды остаётся прикидка по времени последнего обновления.
+ * A task that has most likely been abandoned. With a lease this is a fact —
+ * the term ran out; without one it stays a guess from the last update time.
  */
 export function isStale(task: TaskSummary): boolean {
   if (task.status !== 'in_progress') return false
@@ -35,7 +35,7 @@ export function isStale(task: TaskSummary): boolean {
   return (Date.now() - new Date(task.updated_at).getTime()) / 1000 > STALE_AFTER_S
 }
 
-/** Через сколько истечёт аренда, словами. */
+/** How long until the lease expires, in words. */
 export function leaseLeft(task: TaskSummary): string | null {
   if (!task.lease_expires || task.status !== 'in_progress') return null
   const seconds = (new Date(task.lease_expires).getTime() - Date.now()) / 1000

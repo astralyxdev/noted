@@ -1,10 +1,11 @@
-"""MCP по HTTP на том же порту, что и API.
+"""MCP over HTTP, on the same port as the API.
 
-Смысл эндпоинта в том, что агенту не нужен отдельный процесс: поднялся
-контейнер — MCP уже доступен. Проверяем настоящим клиентом из SDK.
+The point of the endpoint is that an agent needs no separate process: the
+container is up, so MCP is already there. Checked with a real SDK client.
 
-Клиент открывается внутри теста, а не фикстурой: anyio не переносит выход из
-cancel scope в другую задачу, а фикстура с yield делает ровно это.
+The client is opened inside each test rather than by a fixture: anyio will not
+let a cancel scope be exited from another task, which is what a yielding
+fixture does.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ async def test_full_cycle_over_http(live_server):
         empty = (
             await mcp.call_tool("claim_task", {"assignee_id": "agent-1", "project": "noted"})
         ).structured_content
-        assert empty["outcome"] == "empty", "чужой скоуп и пустая очередь — не ошибка"
+        assert empty["outcome"] == "empty", "an empty queue is not an error"
 
         done = (
             await mcp.call_tool(
@@ -60,11 +61,11 @@ async def test_full_cycle_over_http(live_server):
 async def test_bad_input_is_reported_as_tool_error(live_server):
     async with Client(f"{live_server}/mcp/") as mcp:
         result = await mcp.call_tool("set_status", {"task_id": 1, "status": "почти_done"})
-    assert result.is_error, "кривой вход должен приходить как ошибка инструмента"
+    assert result.is_error, "bad input must arrive as a tool error"
 
 
 async def test_missing_task_is_a_normal_answer(live_server):
-    """not_found — штатный исход: агент обязан его обработать, а не упасть."""
+    """not_found is a normal outcome: an agent must handle it, not crash."""
     async with Client(f"{live_server}/mcp/") as mcp:
         result = await mcp.call_tool("get_task", {"task_id": 999})
     assert not result.is_error
@@ -109,8 +110,8 @@ async def test_journal_is_available_to_the_agent(live_server):
 
 
 async def test_flood_reaches_the_agent_as_an_error(live_server, monkeypatch):
-    """Захлебнувшийся агент должен получить исключение, а не тихое «нет»:
-    иначе цикл, который его туда загнал, продолжит крутиться."""
+    """A flooding agent needs an exception, not a quiet "no": otherwise the
+    loop that got it there keeps spinning."""
     monkeypatch.setenv("NOTED_CREATE_LIMIT", "2")
 
     async with Client(f"{live_server}/mcp/") as mcp:
