@@ -83,6 +83,7 @@ async def set_task(
             priority=priority,
             max_attempts=max_attempts,
             depends_on=depends_on,
+            allowed_projects=who.projects,
         )
     except TaskError as exc:
         return _out(envelope(exc.code, exc.message, task=None))
@@ -227,6 +228,10 @@ async def heartbeat(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     who = _who(ctx)
+    # The answer carries the whole task, result included: a read before a write.
+    existing = await run_service(tasks_service.get, task_id)
+    if existing is not None and not who.may_touch(existing.project):
+        return _out(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
     outcome, task = await run_service(
         tasks_service.heartbeat,
         task_id=task_id,

@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 
 from api.services import tasks as tasks_service
 from api.utils import events, run_service
+from api.utils.authorization import of as principal_of
 
 router = APIRouter(include_in_schema=False)
 
@@ -63,12 +64,16 @@ async def _cursor(request: Request, after: int | None) -> int:
 @router.get("/events")
 async def live_events(request: Request, after: int | None = None):
     cursor = await _cursor(request, after)
+    # The journal names projects, actors and transitions, and `?after=0`
+    # replays all of it. Without this a key refused on /api/tasks could read
+    # every project's history here instead.
+    allowed = principal_of(request).projects
 
     async def stream():
         nonlocal cursor
         yield "retry: 3000\n\n"
         while True:
-            batch = await run_service(tasks_service.events_after, cursor, BATCH)
+            batch = await run_service(tasks_service.events_after, cursor, BATCH, allowed)
             if batch:
                 for event in batch:
                     yield _frame(event)

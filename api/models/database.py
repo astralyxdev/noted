@@ -50,15 +50,21 @@ def claim_lock() -> str:
     return store().CLAIM_LOCK
 
 
-def row_lock() -> str:
+def row_lock(of: str | None = None) -> str:
     """The clause that holds one row still between reading it and writing it.
 
     Compare-and-set, ownership and fencing are all decided by reading a task
     and then updating it. On SQLite the process lock makes that pair atomic; on
     PostgreSQL two requests run side by side, and without `FOR UPDATE` both
     would pass the same check before either wrote.
+
+    `of` names the table to lock when the query joins others: PostgreSQL will
+    not lock the rows of a joined table it is only reading through.
     """
-    return store().ROW_LOCK
+    clause = store().ROW_LOCK
+    if clause and of:
+        return f"{clause} OF {of}"
+    return clause
 
 
 @contextmanager

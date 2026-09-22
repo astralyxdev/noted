@@ -43,6 +43,7 @@ async def create_task(request: CreateTaskRequest, http: Request):
         priority=request.priority,
         max_attempts=request.max_attempts,
         depends_on=request.depends_on,
+        allowed_projects=who.projects,
     )
     if created:
         await events.notify_new_task()
@@ -160,6 +161,11 @@ async def set_task_status(task_id: int, request: SetStatusRequest, http: Request
 async def heartbeat(task_id: int, request: HeartbeatRequest, http: Request):
     """Extend the lease: the executor is alive and still on this task."""
     who = principal_of(http)
+    # The answer carries the whole task, result included, so this is a read
+    # before it is a write and the scope has to be checked as one.
+    existing = await run_service(tasks_service.get, task_id)
+    if existing is not None and not who.may_touch(existing.project):
+        return respond(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
     outcome, task = await run_service(
         tasks_service.heartbeat,
         task_id=task_id,
@@ -242,10 +248,14 @@ async def renew_session(http: Request):
 
 
 @router.get("/stats")
-async def get_stats(project: str | None = None, unscoped: bool = False):
+async def get_stats(http: Request, project: str | None = None, unscoped: bool = False):
     """Everything the dashboard header needs in one request: counters inside
-    the current scope, plus the project and assignee lists for the filters."""
-    counts = await run_service(tasks_service.stats, project=project, unscoped=unscoped)
-    known_projects = await run_service(tasks_service.projects)
-    known_assignees = await run_service(tasks_service.assignees)
+    the current scope, plus the project and assignee lists for the filters.
+
+    All three are readable data, so all three follow the key's scope — the
+    counters, the project names and the assignee names alike."""
+    allowed = principal_of(http).projects
+    counts = await run_service(tasks_service.stats, project=project, unscoped=unscoped, allowed_projects=allowed)
+    known_projects = await run_service(tasks_service.projects, allowed_projects=allowed)
+    known_assignees = await run_service(tasks_service.assignees, allowed_projects=allowed)
     return respond(envelope(Outcome.ok, stats=counts, projects=known_projects, assignees=known_assignees))

@@ -201,9 +201,16 @@ def create(
     priority: int = 0,
     max_attempts: int | None = None,
     depends_on: Sequence[int] | None = None,
+    allowed_projects: Sequence[str] | None = None,
 ) -> tuple[Task, bool]:
     """Create a task. The second element says whether it was really created:
-    a matching `key` returns the existing task so a retry breeds no duplicates."""
+    a matching `key` returns the existing task so a retry breeds no duplicates.
+
+    `parent_id` and `depends_on` point at tasks, and pointing at one is a way
+    of reading it: `waiting_on` then tracks whether it has finished, which is a
+    liveness probe on work the caller may not see. Out of scope is answered as
+    "does not exist", so the ids cannot be enumerated either.
+    """
     if not isinstance(task, dict):
         raise TaskError(Outcome.validation_error, "task must be a JSON object")
     payload = _dump(task, "task")
@@ -238,10 +245,13 @@ def create(
                     f"{who}: {recent} tasks in the last {int(window)}s against a limit of {limit} — slow down",
                 )
 
-        if parent_id is not None and _fetch(conn, parent_id) is None:
-            raise TaskError(Outcome.parent_not_found, f"parent task {parent_id} does not exist")
+        if parent_id is not None:
+            parent = _fetch(conn, parent_id)
+            if parent is None or not in_scope(parent["project"], allowed_projects):
+                raise TaskError(Outcome.parent_not_found, f"parent task {parent_id} does not exist")
         for dep in wanted_deps:
-            if _fetch(conn, dep) is None:
+            predecessor = _fetch(conn, dep)
+            if predecessor is None or not in_scope(predecessor["project"], allowed_projects):
                 raise TaskError(Outcome.validation_error, f"dependency {dep} does not exist")
 
         # RETURNING rather than lastrowid: it is the one way to read the new id
@@ -299,16 +309,36 @@ def events(task_id: int, limit: int = 200) -> list[TaskEvent]:
     return [_event(r) for r in rows]
 
 
-def events_after(cursor: int = 0, limit: int = 200) -> list[TaskEvent]:
-    """The whole journal, starting after the given entry number.
+def events_after(
+    cursor: int = 0,
+    limit: int = 200,
+    allowed_projects: Sequence[str] | None = None,
+) -> list[TaskEvent]:
+    """The journal, starting after the given entry number.
 
     Lossless reconnection rests on this: a client remembers the number of the
     last event it saw and asks to continue from there.
+
+    Scoped like every other read. The journal names projects, actors, task ids
+    and transition details, so a stream that ignored the key's scope would hand
+    over everything the same key is refused on `/api/tasks` — and `?after=0`
+    would replay the whole history of every project to ask for it.
     """
     limit = max(1, min(int(limit), MAX_LIMIT))
+    where = ["e.id > ?"]
+    args: list[Any] = [int(cursor)]
+    if allowed_projects is not None:
+        names = sorted({str(p) for p in allowed_projects})
+        listed = ", ".join("?" * len(names)) or "NULL"
+        where.append(f"(t.project IS NULL OR t.project IN ({listed}))")
+        args.extend(names)
+    args.append(limit)
+
     with database.reading() as conn:
         rows = conn.execute(
-            "SELECT * FROM task_events WHERE id > ? ORDER BY id LIMIT ?", (int(cursor), limit)
+            "SELECT e.* FROM task_events e JOIN tasks t ON t.id = e.task_id"
+            f" WHERE {' AND '.join(where)} ORDER BY e.id LIMIT ?",
+            args,
         ).fetchall()
     return [_event(r) for r in rows]
 
@@ -317,6 +347,11 @@ def last_event_id() -> int:
     with database.reading() as conn:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) AS last FROM task_events").fetchone()
     return row["last"]
+
+
+def in_scope(project: str | None, allowed: Sequence[str] | None) -> bool:
+    """Whether a key with `allowed` may touch `project`. Unscoped keys may."""
+    return allowed is None or project is None or project in set(allowed)
 
 
 def ensure_scope(project: str | None, allowed: Sequence[str] | None) -> None:
@@ -406,23 +441,50 @@ def list_tasks(
 
 
 def _unblock_dependents(conn: database.Connection, task_id: int, now: float) -> list[int]:
-    """A predecessor closed successfully: unblock whoever has nothing left to wait for."""
+    """A predecessor closed successfully: unblock whoever has nothing left to wait for.
+
+    The candidate is locked *before* its dependencies are counted. Two
+    predecessors of the same task can finish at the same instant, and without
+    the lock each transaction counts against a snapshot that does not yet hold
+    the other's commit: both decide something is still unmet, neither unblocks,
+    and the task is stranded in `blocked` with nothing left to wait for and no
+    event that will ever look at it again.
+
+    With the lock the second transaction waits, then counts afresh and sees the
+    first one's work. The count therefore has to happen after the lock, which
+    is why it is no longer a clause of the same query.
+    """
     rows = conn.execute(
-        """
+        f"""
         SELECT t.id FROM tasks t
           JOIN task_deps d ON d.task_id = t.id
-         WHERE d.depends_on_id = ?
-           AND t.status = 'blocked'
-           AND NOT EXISTS (SELECT 1 FROM task_deps dd JOIN tasks p ON p.id = dd.depends_on_id
-                            WHERE dd.task_id = t.id AND p.status <> 'done')
+         WHERE d.depends_on_id = ? AND t.status = 'blocked'
+         ORDER BY t.id{database.row_lock("t")}
         """,
         (task_id,),
     ).fetchall()
-    freed = [r["id"] for r in rows]
-    for dependent in freed:
-        conn.execute("UPDATE tasks SET status = 'pending', updated_at = ? WHERE id = ?", (now, dependent))
+
+    freed: list[int] = []
+    for row in rows:
+        dependent = row["id"]
+        unmet = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_deps dd JOIN tasks p ON p.id = dd.depends_on_id"
+            " WHERE dd.task_id = ? AND p.status <> 'done'",
+            (dependent,),
+        ).fetchone()["n"]
+        if unmet:
+            continue
+        # Guarded even while holding the lock: the status is the invariant, and
+        # a write that states it cannot be read back wrongly later.
+        changed = conn.execute(
+            "UPDATE tasks SET status = 'pending', updated_at = ? WHERE id = ? AND status = 'blocked'",
+            (now, dependent),
+        )
+        if not changed.rowcount:
+            continue
         _log(conn, dependent, "unblocked", actor="system", from_status="blocked",
              to_status="pending", detail={"after": task_id}, at=now)
+        freed.append(dependent)
     return freed
 
 
@@ -441,7 +503,7 @@ def _block_dependents(conn: database.Connection, task_id: int, reason: str, now:
         current = frontier.pop()
         rows = conn.execute(
             "SELECT t.id FROM tasks t JOIN task_deps d ON d.task_id = t.id "
-            " WHERE d.depends_on_id = ? AND t.status = 'pending'",
+            f" WHERE d.depends_on_id = ? AND t.status = 'pending' ORDER BY t.id{database.row_lock('t')}",
             (current,),
         ).fetchall()
         for row in rows:
@@ -449,7 +511,17 @@ def _block_dependents(conn: database.Connection, task_id: int, reason: str, now:
             if dependent in seen:
                 continue
             seen.add(dependent)
-            conn.execute("UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ?", (now, dependent))
+            # `AND status = 'pending'` is what stops this overwriting a decision
+            # somebody else already committed — an agent that claimed the task
+            # a moment ago, or an operator who cancelled it. Without the guard
+            # the write lands anyway and the journal records a transition that
+            # never happened.
+            changed = conn.execute(
+                "UPDATE tasks SET status = 'blocked', updated_at = ? WHERE id = ? AND status = 'pending'",
+                (now, dependent),
+            )
+            if not changed.rowcount:
+                continue
             _log(conn, dependent, "blocked", actor="system", from_status="pending",
                  to_status="blocked",
                  detail={"because": current, "reason": reason if current == task_id else "predecessor blocked"},
@@ -812,18 +884,45 @@ def trim_journal() -> int:
         return cur.rowcount
 
 
-def stats(project: str | None = None, unscoped: bool = False) -> dict[str, int]:
+def _scope_clause(allowed: Sequence[str] | None, args: list[Any]) -> str:
+    """`project IN (…)` for a scoped key, and nothing at all for an unscoped one.
+
+    A scoped key sees its own projects plus the shared pool, which is exactly
+    what `claim` and `list_tasks` already do.
+    """
+    if allowed is None:
+        return ""
+    names = sorted({str(p) for p in allowed})
+    listed = ", ".join("?" * len(names)) or "NULL"
+    args.extend(names)
+    return f"(project IS NULL OR project IN ({listed}))"
+
+
+def stats(
+    project: str | None = None,
+    unscoped: bool = False,
+    allowed_projects: Sequence[str] | None = None,
+) -> dict[str, int]:
     """Per-status counters for the dashboard chips and /api/stats.
 
     Counted inside the current scope: otherwise, with a project selected, the
-    chips lie — "all 8" above a list of four.
+    chips lie — "all 8" above a list of four. And counters are readable data
+    like any other, so a key scoped elsewhere is refused rather than told how
+    much work another project has.
     """
-    where, args = "", []
+    clauses: list[str] = []
+    args: list[Any] = []
     if unscoped:
-        where = " WHERE project IS NULL"
+        clauses.append("project IS NULL")
     elif project is not None:
-        where = " WHERE project = ?"
+        ensure_scope(project, allowed_projects)
+        clauses.append("project = ?")
         args.append(_actor(project, "project"))
+    else:
+        scope = _scope_clause(allowed_projects, args)
+        if scope:
+            clauses.append(scope)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
     with database.reading() as conn:
         rows = conn.execute(f"SELECT status, COUNT(*) AS n FROM tasks{where} GROUP BY status", args).fetchall()
@@ -834,19 +933,36 @@ def stats(project: str | None = None, unscoped: bool = False) -> dict[str, int]:
     return counts
 
 
-def projects() -> list[str]:
-    """Known projects, for the dashboard filters and the new-task form."""
+def projects(allowed_projects: Sequence[str] | None = None) -> list[str]:
+    """Known projects, for the dashboard filters and the new-task form.
+
+    The list of names is itself something a scope covers: without this a key
+    for one project learns what every other project is called.
+    """
+    args: list[Any] = []
+    clauses = ["project IS NOT NULL"]
+    scope = _scope_clause(allowed_projects, args)
+    if scope:
+        clauses.append(scope)
     with database.reading() as conn:
         rows = conn.execute(
-            "SELECT project, COUNT(*) AS n FROM tasks WHERE project IS NOT NULL GROUP BY project ORDER BY project"
+            f"SELECT project, COUNT(*) AS n FROM tasks WHERE {' AND '.join(clauses)}"
+            " GROUP BY project ORDER BY project",
+            args,
         ).fetchall()
     return [r["project"] for r in rows]
 
 
-def assignees() -> list[str]:
-    """Known assignees, for the filter dropdown."""
+def assignees(allowed_projects: Sequence[str] | None = None) -> list[str]:
+    """Known assignees, for the filter dropdown. Scoped for the same reason."""
+    args: list[Any] = []
+    clauses = ["assignee_id IS NOT NULL"]
+    scope = _scope_clause(allowed_projects, args)
+    if scope:
+        clauses.append(scope)
     with database.reading() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT assignee_id FROM tasks WHERE assignee_id IS NOT NULL ORDER BY assignee_id"
+            f"SELECT DISTINCT assignee_id FROM tasks WHERE {' AND '.join(clauses)} ORDER BY assignee_id",
+            args,
         ).fetchall()
     return [r["assignee_id"] for r in rows]
