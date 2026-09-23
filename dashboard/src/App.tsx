@@ -9,7 +9,6 @@ import { Stat } from '@/components/ui/stat'
 import { useToast } from '@/components/ui/toast'
 import { api, type Status } from '@/api'
 import { ConnectButton, ConnectDialog } from '@/parts/ConnectDialog'
-import { LoginScreen } from '@/parts/LoginScreen'
 import { NewTaskDialog } from '@/parts/NewTaskDialog'
 import { FilterBar } from '@/parts/FilterBar'
 import { TaskDialog } from '@/parts/TaskDialog'
@@ -40,7 +39,7 @@ export function App() {
   const [connecting, setConnecting] = useState(false)
   const [revision, setRevision] = useState(0)
 
-  const { tasks, stats, projects, assignees, error, locked, pending, more, loadingMore, loadMore, refresh } =
+  const { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh } =
     useDashboard(filters)
   const { toast } = useToast()
   useTicker()
@@ -51,7 +50,7 @@ export function App() {
     void refresh()
   }, [refresh])
 
-  const live = useLive(reload, !locked)
+  const live = useLive(reload)
   const bottom = useNearBottom(more && !pending, loadMore)
 
   const changeStatus = useCallback(
@@ -80,7 +79,6 @@ export function App() {
     filters.status.length > 0 || filters.project !== null || filters.assignee !== null || filters.stale !== null
   const stuck = tasks.filter(isStale).length
 
-  if (locked) return <LoginScreen onEntered={reload} />
 
   return (
     <div className="bg-background text-foreground min-h-dvh">

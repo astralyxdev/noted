@@ -33,7 +33,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pyproject.toml main.py cli.py ./
+COPY pyproject.toml main.py ./
 COPY api ./api
 RUN pip install --no-cache-dir --no-deps -e .
 

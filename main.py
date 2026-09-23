@@ -21,13 +21,11 @@ from api.models import database
 from api.models.envelope import Outcome, body, envelope
 from api.routes import live_router, tasks_router
 from api.routes.mcp import build as build_mcp
-from api.services import agents as agents_service
 from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events as task_events
 from api.utils import run_service
 from api.utils import respond
-from api.utils.authorization import middleware as token_middleware
 
 log = logging.getLogger("noted")
 
@@ -70,7 +68,6 @@ async def _collect() -> None:
     if trimmed:
         log.info("journal trimmed: %s entries of closed tasks", trimmed)
 
-    await run_service(agents_service.prune_sessions)
 
 
 def ui_dir() -> Path:
@@ -102,7 +99,6 @@ def create_app() -> FastAPI:
         description="A task manager for agents: API, MCP and dashboard on one port",
         lifespan=lifespan,
     )
-    app.middleware("http")(token_middleware)
     app.include_router(tasks_router)
     app.include_router(live_router)
     # MCP over HTTP on the same port: no separate adapter process is needed.

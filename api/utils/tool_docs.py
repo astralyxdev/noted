@@ -56,18 +56,16 @@ Compare-and-set is on by default: with no `if_status` the server checks that
 the task is still in_progress, the only state an executor may report from. A
 mismatch answers outcome="status_conflict" with the current state, so two
 agents cannot finish the same task. Pass `if_status` to check a different
-state, or force=true to write unconditionally. force is for a human at the
-dashboard: presented with an agent key it is refused outright with
-outcome="forbidden".
+state, or force=true to write unconditionally — that is a human overriding the
+queue, not an executor that forgot a parameter.
 
-A task held by another executor answers outcome="not_owner", so another
-agent's work is not closed by mistake. Who you are follows from your key —
-assignee_id is read only when the queue is running without keys at all.
+assignee_id says who you are. A task held by somebody else answers
+outcome="not_owner", so another agent's work is not closed by mistake.
 
 If the task has max_attempts and attempts remain, status failed does not leave
 it failed: it returns to the queue after a pause, and the answer will carry
 status="pending". That is expected.
-Outcomes: updated, not_found, status_conflict, not_owner, stale_session."""
+Outcomes: updated, not_found, status_conflict, not_owner."""
 
 CLAIM_TASK = """Atomically take the next task and move it to in_progress.
 
@@ -85,23 +83,16 @@ lease_s is the lease length, 300 seconds by default. Unless it is renewed the
 task returns to the queue on its own, so a crashed agent's work never hangs.
 The other side of that: work past the lease in silence and another agent takes
 the task, with both of you doing it. So either call heartbeat as you go or ask
-for a lease that covers the worst case. lease_s=0 takes no lease at all.
-
-A session is a second guard, not a replacement for the lease. When your client
-sends Mcp-Session-Id the task is held while *either* the lease has not expired
-*or* the session is still alive, so letting a lease run out is not on its own
-enough to lose the task. The exception is a client that declared itself
-self-renewing: it promised to keep its session fresh in the background, so its
-silence is read as a dead process and its tasks are released at once.
+for a lease that covers the worst case. lease_s=0 takes no lease at all, which
+means nothing will ever take the task back from you — including if you die.
 Outcomes: claimed, empty."""
 
 HEARTBEAT = """Extend a task's lease: "I am alive and still working on it".
 
 Call it periodically while you work, well inside lease_s. Stop calling and the
 lease expires, handing the task to another agent. Only your own task can be
-extended, and only while it is in_progress. Who you are follows from your key;
-assignee_id is read only when the queue is running without keys at all.
-Outcomes: updated, not_found, status_conflict, not_owner, stale_session."""
+extended, and only while it is in_progress.
+Outcomes: updated, not_found, status_conflict, not_owner."""
 
 #: Outcomes an agent must see as a tool error rather than as a result.
 #: not_found, status_conflict and empty stay out: those are normal answers.

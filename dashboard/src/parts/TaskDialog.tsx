@@ -12,7 +12,7 @@ import {
 import { Select } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Spinner } from '@/components/ui/spinner'
-import { ApiError, STATUSES, api, type Status, type Task, type TaskEvent, type TaskSummary } from '@/api'
+import { STATUSES, api, type Status, type Task, type TaskEvent, type TaskSummary } from '@/api'
 import { EVENT_LABEL, STATUS_COLOR, at, ago, leaseLeft, pretty, title } from '@/lib/format'
 
 type Props = {
@@ -52,15 +52,7 @@ export function TaskDialog({ taskId, onClose, onStatus, onOpen, revision }: Prop
         setLog(history)
         setError(null)
       } catch (cause) {
-        if (!alive) return
-        // A 401 here means the pass expired while the dialog was open. The
-        // backend's own wording is about headers and means nothing to someone
-        // looking at a task.
-        if (cause instanceof ApiError && cause.outcome === 'unauthorized') {
-          setError('your session has expired — close this and sign in again')
-        } else {
-          setError(cause instanceof Error ? cause.message : String(cause))
-        }
+        if (alive) setError(cause instanceof Error ? cause.message : String(cause))
       }
     })()
     return () => {

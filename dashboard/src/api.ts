@@ -115,13 +115,6 @@ export type PageOptions = {
 }
 
 export const api = {
-  async login(token: string): Promise<void> {
-    await call('/api/login', { method: 'POST', body: JSON.stringify({ token }) })
-  },
-
-  async logout(): Promise<void> {
-    await call('/api/logout', { method: 'POST' })
-  },
 
   async list(filters: Filters, page: PageOptions = {}): Promise<TaskSummary[]> {
     return (await call(`/api/tasks?${listQuery(filters, page)}`)).tasks ?? []

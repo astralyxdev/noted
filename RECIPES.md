@@ -125,20 +125,18 @@ wait
 polling the queue. An empty queue costs one hanging request a minute, not sixty.
 
 In production replace `&` with a systemd unit or `docker compose --scale`, so a
-crashed agent comes back by itself. The session of a dead process expires and
-its tasks return to the queue without your involvement.
+crashed agent comes back by itself. Its tasks return to the queue when their
+lease expires, without your involvement.
 
 For work of this shape, ask for a `lease_s` that covers your longest step, or
 call `heartbeat` between steps. Nothing is sent while the model is busy, so the
 lease is the only thing standing between a long step and somebody else taking
 the task.
 
-A supervisor can do better, and this loop is already one. Renew the session
-yourself — `POST /api/sessions/renew` with the session header, on a timer — and
-declare it with `X-Noted-Transport: self-renewing`. Then your silence means the
-process is dead rather than busy, and the core releases the tasks you were
-holding within `NOTED_SESSION_TTL_S` instead of waiting out the lease. The model
-never has to think about being alive; the wrapper around it does.
+A supervisor can do better than waiting out a lease, and this loop is already
+one. It knows when its child process died — so let it put the task back itself:
+`set_status(id, "pending", force=true)` the moment the child exits without
+reporting. The core cannot know that; the thing that spawned the agent can.
 
 ## Integrations: events instead of polling
 
@@ -149,12 +147,9 @@ external logic can be built on events rather than on lighting up the dashboard.
 ```python
 import json, httpx
 
-# The journal is as revealing as the API, so /events is behind the same door.
-headers = {"X-Noted-Token": os.environ["NOTED_TOKEN"]}
-
 cursor = 0
 while True:
-    with httpx.stream("GET", "http://127.0.0.1:8787/events", headers=headers,
+    with httpx.stream("GET", "http://127.0.0.1:8787/events",
                       params={"after": cursor}, timeout=None) as stream:
         for line in stream.iter_lines():
             if not line.startswith("data: "):

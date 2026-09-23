@@ -54,17 +54,19 @@ def test_explicit_if_status_still_wins():
     assert outcome is Outcome.updated
 
 
-def test_finishing_releases_the_session_so_latecomers_cannot_overwrite():
-    """A human cancelled the task; a returning agent must not overwrite that."""
-    from api.models.agent import SELF_RENEWING
-    from api.services import agents
+def test_a_latecomer_cannot_overwrite_a_cancellation():
+    """A human cancelled the task while an agent was working on it.
 
+    Compare-and-set is what protects that: the agent reports `done` expecting
+    `in_progress`, the task is `cancelled`, and the write is refused. Without
+    the default expectation the cancellation would simply be overwritten by
+    whoever finished last.
+    """
     task, _ = service.create({"title": "contested"})
-    session = agents.open_session("agent-1", SELF_RENEWING)
-    service.claim("agent-1", session_id=session.id)
+    service.claim("agent-1")
 
     service.set_status(task.id, "cancelled", force=True)
 
-    outcome, _ = service.set_status(task.id, "done", actor="agent-1", session_id=session.id, strict_session=True)
+    outcome, _ = service.set_status(task.id, "done", actor="agent-1")
     assert outcome is Outcome.status_conflict, "the cancellation is not overwritten"
     assert service.get(task.id).status.value == "cancelled"

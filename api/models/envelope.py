@@ -25,11 +25,8 @@ class Outcome(str, Enum):
     not_found = "not_found"
     status_conflict = "status_conflict"
     not_owner = "not_owner"
-    forbidden = "forbidden"
-    stale_session = "stale_session"
     rate_limited = "rate_limited"
     parent_not_found = "parent_not_found"
-    unauthorized = "unauthorized"
     validation_error = "validation_error"
     internal_error = "internal_error"
 
@@ -44,11 +41,8 @@ HTTP_STATUS: dict[Outcome, int] = {
     Outcome.not_found: 404,
     Outcome.status_conflict: 409,
     Outcome.not_owner: 409,
-    Outcome.forbidden: 403,
-    Outcome.stale_session: 409,
     Outcome.rate_limited: 429,
     Outcome.parent_not_found: 404,
-    Outcome.unauthorized: 401,
     Outcome.validation_error: 422,
     Outcome.internal_error: 500,
 }
@@ -60,8 +54,6 @@ SUCCESS = frozenset(
 #: Outcomes an agent must receive as a tool error rather than as a result.
 HARD_ERRORS = frozenset(
     {
-        Outcome.unauthorized,
-        Outcome.forbidden,
         Outcome.validation_error,
         Outcome.internal_error,
         # A flooding agent needs an exception, not a quiet "no": otherwise the

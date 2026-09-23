@@ -40,9 +40,9 @@ the same task. Noted solves that, and a few things that follow from it:
 - **Order of work is respected.** `depends_on` withholds a task until its
   predecessors are closed; a failed predecessor turns its waiters `blocked`.
 - **Urgent goes first.** `priority` sorts the queue without breaking addressing.
-- **An agent is a principal, not a string.** A key proves identity, the
-  `assignee_id` follows from the key, and the project scope is enforced. Nobody
-  can take another's name.
+- **Who did what is recorded.** `assignee_id` and `created_by` are whatever the
+  caller says they are — agent identity belongs to the system that runs the
+  agents, and it is not Noted's to invent.
 - **Safe behaviour is the default.** `set_status` without `if_status` does not
   write unconditionally: a forgotten parameter cannot break invariants in
   silence, and an unconditional write is an explicit `force`.
@@ -51,8 +51,8 @@ the same task. Noted solves that, and a few things that follow from it:
   it took.
 - **A retry breeds no duplicates.** The same idempotency key returns the
   existing task.
-- **Projects stay out of each other's way.** An agent working in a project will
-  not be handed another project's task.
+- **Projects keep work apart.** Claiming inside a project is handed only that
+  project's tasks, so unrelated work does not cross.
 - **A looping agent cannot flood the queue.** A per-author creation limit
   catches the breakage without getting in the way of honest decomposition.
 
@@ -107,51 +107,7 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 The same address, command and a ready-made config snippet are behind the
 **Connect MCP** button in the dashboard header.
 
-### Agent keys
-
-Until the first key is issued the queue is open: anyone may post and claim. The
-first key turns identity on — an upgrade breaks nothing, and strictness arrives
-by an explicit act.
-
-```bash
-venv/bin/noted-keys add agent-builder --projects noted,ui-kit
-venv/bin/noted-keys list
-venv/bin/noted-keys revoke agent-builder
-```
-
-A key is shown once; only its hash is stored. From then on it lives in a header:
-
-```bash
-claude mcp add --transport http noted http://127.0.0.1:8787/mcp/ \
-    --header "X-Noted-Token: noted_…"
-```
-
-With a key the server fills in `assignee_id` and `created_by` itself: taking
-another's name is not possible. The project scope is enforced on reading as well
-as writing — a scoped agent cannot list, read, claim or modify a foreign task.
-`force` is refused to agents: it belongs to administrators.
-
-The first key cannot be issued unless there is already a way into the dashboard —
-`NOTED_TOKEN`, or a key created with `--admin`. Otherwise turning identity on
-would lock every human out.
-
-### Sessions instead of heartbeats
-
-An LLM agent can only call tools between steps: while a ten-minute build runs it
-sends no heartbeat at all. So a task is held while **either** guard holds — the
-lease has not expired, or the session is still alive.
-
-An MCP client sends nothing during a long step, so its silence proves nothing
-and the lease is what governs: ask for a `lease_s` that covers your longest
-step, or call `heartbeat` as you go.
-
-If you run agents under a supervisor of your own, it can do better. A process
-that renews the session in the background — with no involvement from the model —
-says so with `X-Noted-Transport: self-renewing`, and then its silence *is*
-evidence: when it dies its tasks return within `NOTED_SESSION_TTL_S` (90 s)
-instead of waiting out the lease. [RECIPES.md](RECIPES.md) shows the loop.
-
-That makes the executor loop short:
+The executor loop is short:
 
 ```
 claim_task(assignee_id="agent-1", project="noted", timeout_s=30)
@@ -166,6 +122,14 @@ moment one appears. There is no need to poll the queue in a loop.
 
 `set_status` without `if_status` checks that the task is still `in_progress`, so
 a forgotten parameter breaks nothing. An unconditional write is `force=true`.
+
+**There is no authentication.** Noted does not issue, store or check
+credentials, and it never decides who you are — `assignee_id` is a parameter
+like any other. Anything that can reach the port can post, claim and close
+tasks. That is the point: agent identity comes from whatever spawns the agents,
+which already has it and can already guarantee it is unique. Keep the port
+private (it binds to the loopback by default) and put a proxy in front if it
+ever has to be reachable.
 
 ## MCP tools
 
@@ -189,10 +153,7 @@ decides what to do next by it:
 | `not_found` · `parent_not_found` | false | 404 | no such task · no such parent |
 | `status_conflict` | false | 409 | `if_status` did not match, or the task is in another state |
 | `not_owner` | false | 409 | the task is held by another executor |
-| `stale_session` | false | 409 | another instance holds it, or no session was sent |
-| `forbidden` | false | 403 | the project is outside the key's scope |
 | `validation_error` | false | 422 | malformed input |
-| `unauthorized` | false | 401 | `NOTED_TOKEN` is set and the header did not match |
 | `rate_limited` | false | 429 | the author posts faster than the limit |
 | `internal_error` | false | 500 | a fault in the core; the log entry id is in `message` |
 
@@ -296,9 +257,7 @@ the file, so `docker run -e` and `export` override `.env`.
 | `NOTED_DB_POOL` | `10` | connections held against PostgreSQL |
 | `NOTED_HOST` / `NOTED_PORT` | `127.0.0.1` / `8787`, `0.0.0.0` in the image | where the core listens |
 | `NOTED_UI_DIR` | `dashboard/dist` | the built dashboard |
-| `NOTED_TOKEN` | empty | when set, `/api`, `/mcp`, `/events` and `/docs` require `X-Noted-Token` |
-| `NOTED_LEASE_S` | `300` | lease length when the agent asks for none |
-| `NOTED_SESSION_TTL_S` | `90` | how long a session survives without renewal |
+| `NOTED_LEASE_S` | `300` | how long a claimed task is held when the caller asks for no lease |
 | `NOTED_REAP_INTERVAL_S` | `15` | how often expired leases are collected |
 | `NOTED_RETRY_BASE_S` / `NOTED_RETRY_CAP_S` | `5` / `300` | first retry pause and its ceiling |
 | `NOTED_CREATE_LIMIT` / `NOTED_CREATE_WINDOW_S` | `300` / `60` | per-author creation limit; `0` disables |
@@ -317,14 +276,10 @@ overriding.
 `127.0.0.1:8787` is published. If the core really has to be reachable from
 elsewhere, hand out per-agent keys rather than a shared token.
 
-**Access.** Agents arrive with a key in a header; the dashboard has its own
-door — with `NOTED_TOKEN` set the browser asks for it once and keeps a pass in a
-cookie. There are no roles inside the dashboard: whoever signs in is an admin.
-The door stops answering after eight wrong guesses a minute from one address.
-
-A key's scope covers everything readable, not only the task list: the journal
-at `/events`, the counters at `/api/stats`, the project and assignee names, and
-whether a given task id exists at all.
+**Access.** There is none to configure: Noted authenticates nobody. Anything
+that reaches the port has full use of the queue and the dashboard. Bind it to
+the loopback, which is the default, and put a proxy with its own auth in front
+if you need it reachable.
 
 **Data.** On SQLite it is one file in WAL mode, living in a volume: back it up
 by copying the directory with the container stopped, or with

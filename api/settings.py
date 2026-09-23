@@ -79,20 +79,11 @@ def port() -> int:
     return _whole("NOTED_PORT", 8787, minimum=1)
 
 
-def admin_token() -> str | None:
-    return (os.environ.get("NOTED_TOKEN") or "").strip() or None
-
-
 # ── liveness and recovery ────────────────────────────────────────────────
 
 def lease_s() -> float:
-    """Task lease for claims made outside a session."""
+    """How long a claimed task is held before it returns to the queue."""
     return _number("NOTED_LEASE_S", 300.0)
-
-
-def session_ttl_s() -> float:
-    """How long a session survives without renewal."""
-    return _number("NOTED_SESSION_TTL_S", 90.0)
 
 
 def reap_interval_s() -> float:

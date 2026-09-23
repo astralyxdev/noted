@@ -25,7 +25,6 @@ sqlite_only = pytest.mark.skipif(bool(TEST_DB_URL), reason="SQLite-specific")
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path, monkeypatch):
     """A fresh database and clean Conditions per test, so tests never see each other."""
-    monkeypatch.delenv("NOTED_TOKEN", raising=False)
     if TEST_DB_URL:
         # The pool is kept between tests and the tables are emptied instead:
         # reconnecting per test costs more than the whole suite.

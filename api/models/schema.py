@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     max_attempts  INTEGER,
     retry_after   {ts},
     lease_expires {ts},
-    session_id    TEXT,
     created_at    {ts}    NOT NULL,
     updated_at    {ts}    NOT NULL
 );
@@ -46,28 +45,6 @@ CREATE TABLE IF NOT EXISTS task_deps (
     PRIMARY KEY (task_id, depends_on_id)
 );
 
--- An agent as a principal rather than a string. The key is stored hashed: it
--- is shown once at issue time and kept nowhere else.
-CREATE TABLE IF NOT EXISTS agents (
-    id          TEXT    PRIMARY KEY,
-    key_hash    TEXT    NOT NULL UNIQUE,
-    projects    TEXT,
-    is_admin    INTEGER NOT NULL DEFAULT 0,
-    created_at  {ts}    NOT NULL,
-    revoked_at  {ts}
-);
-
--- A session is one instance of an agent. The same key can run twice, and
--- without sessions those two processes are indistinguishable. Ids are never
--- reused.
-CREATE TABLE IF NOT EXISTS agent_sessions (
-    id         TEXT   PRIMARY KEY,
-    agent_id   TEXT   NOT NULL,
-    transport  TEXT,
-    opened_at  {ts}   NOT NULL,
-    renewed_at {ts}   NOT NULL,
-    closed_at  {ts}
-);
 
 -- The transition journal: append-only. Current state lives in tasks; this is
 -- how it got there, without which an incident cannot be reconstructed.
@@ -94,8 +71,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_lease    ON tasks(status, lease_expires);
 CREATE INDEX IF NOT EXISTS idx_tasks_creator  ON tasks(created_by, created_at);
 CREATE INDEX IF NOT EXISTS idx_deps_reverse   ON task_deps(depends_on_id);
 CREATE INDEX IF NOT EXISTS idx_events_task    ON task_events(task_id, id);
-CREATE INDEX IF NOT EXISTS idx_tasks_session  ON tasks(session_id, status);
-CREATE INDEX IF NOT EXISTS idx_sessions_alive ON agent_sessions(closed_at, renewed_at);
 """
 
 #: Columns added after the first version of the schema. A database may predate
@@ -107,12 +82,11 @@ LATER_COLUMNS = {
     "max_attempts": "INTEGER",
     "retry_after": "{ts}",
     "lease_expires": "{ts}",
-    "session_id": "TEXT",
 }
 
 #: Dropped in the order that respects the foreign keys. Tests wipe between
 #: cases; nothing in the running service ever calls this.
-TABLE_NAMES = ("task_events", "task_deps", "tasks", "agent_sessions", "agents")
+TABLE_NAMES = ("task_events", "task_deps", "tasks")
 
 
 def tables(dialect: str) -> str:

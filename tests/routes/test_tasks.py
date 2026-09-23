@@ -109,18 +109,6 @@ def test_health_is_open(client):
     assert client.get("/healthz").json()["outcome"] == "ok"
 
 
-def test_token_guards_api_but_not_health(client, monkeypatch):
-    monkeypatch.setenv("NOTED_TOKEN", "s3cret")
-
-    denied = client.get("/api/tasks")
-    assert denied.status_code == 401
-    assert denied.json()["outcome"] == "unauthorized"
-
-    allowed = client.get("/api/tasks", headers={"X-Noted-Token": "s3cret"})
-    assert allowed.status_code == 200
-    assert client.get("/healthz").status_code == 200, "healthz needs no token"
-
-
 def test_project_scope_through_the_api(client):
     client.post("/api/tasks", json={"task": {"n": 1}, "project": "noted"})
     client.post("/api/tasks", json={"task": {"n": 2}, "project": "abot"})

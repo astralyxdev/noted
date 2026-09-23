@@ -31,7 +31,6 @@ What matters more than the rate:
 | 640 tasks claimed | 640 distinct — no task handed out twice |
 | dispatch order | priority, then addressed before pool, then oldest — exactly as promised |
 | a task with an unmet dependency | never handed out; claimable the instant its predecessor closed |
-| a key scoped to another project | refused on list, on read and on write |
 
 Recovery, with a 3-second lease and the collector on its default 15-second
 round: an abandoned task was back in the queue **11 s** after the agent
@@ -62,10 +61,9 @@ domain gets a file of the same name in every layer.
 ```
 noted/
 ├── main.py                      # builds the FastAPI app: routers, MCP, static, uvicorn
-├── cli.py                       # noted-keys: issuing and revoking agent keys
 ├── .env.example                 # every variable, explained; copied to .env
 ├── requirements.txt
-├── pyproject.toml               # entry points noted-api / noted-keys
+├── pyproject.toml               # the noted-api entry point
 ├── .dockerignore · .gitignore
 ├── README.md · SPEC.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
 ├── deploy/
@@ -79,7 +77,6 @@ noted/
 │   │   ├── sqlite_store.py      # one connection, one process lock, WAL
 │   │   ├── postgres_store.py    # a pool, row locks, placeholder translation
 │   │   ├── task.py              # pydantic: the task, statuses, request bodies
-│   │   ├── agent.py             # a principal and its session
 │   │   └── envelope.py          # the response envelope, Outcome enum, HTTP mapping
 │   ├── routes/
 │   │   ├── __init__.py          # router assembly
@@ -87,11 +84,9 @@ noted/
 │   │   ├── live.py              # SSE at /events
 │   │   └── mcp.py               # MCP over HTTP, mounted at /mcp
 │   ├── services/
-│   │   ├── tasks.py             # task domain logic and all the SQL
-│   │   └── agents.py            # keys, scopes, sessions
+│   │   └── tasks.py             # task domain logic and all the SQL
 │   └── utils/
 │       ├── __init__.py          # run_service (a service call in a thread) and respond
-│       ├── authorization.py     # a principal from headers, the dashboard door
 │       ├── events.py            # two Conditions: work for agents, changes for dashboards
 │       └── tool_docs.py         # tool descriptions, pinned against the code by a test
 ├── dashboard/                   # the frontend, built into dist/
@@ -108,8 +103,8 @@ noted/
 │       └── lib/                 # format.ts plus the kit's helpers
 └── tests/
     ├── conftest.py              # a fresh database per test, a live uvicorn for streaming checks
-    ├── services/                # test_tasks · test_lease · test_retry · test_deps · test_journal · test_cas · test_identity · test_rate_limit · test_concurrency
-    └── routes/                  # test_tasks · test_dashboard · test_mcp_http · test_identity_http · test_events_contract · test_review_findings
+    ├── services/                # test_tasks · test_lease · test_retry · test_deps · test_journal · test_cas · test_rate_limit · test_concurrency · test_journal_cursor
+    └── routes/                  # test_tasks · test_dashboard · test_mcp_http · test_events_contract · test_review_findings
 ```
 
 **Layer rules** — the reason the layout exists at all:
@@ -138,7 +133,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     task          TEXT    NOT NULL,              -- JSON
     status        TEXT    NOT NULL DEFAULT 'pending',
-    project       TEXT,                          -- scope, NULL means none
+    project       TEXT,                          -- which project, NULL means none
     assignee_id   TEXT,                          -- the current holder
     created_by    TEXT,
     parent_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
@@ -149,7 +144,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     max_attempts  INTEGER,                       -- NULL means no retries
     retry_after   REAL,                          -- the pause after a failure
     lease_expires REAL,                          -- the lease term
-    session_id    TEXT,                          -- which session holds the task
     created_at    REAL    NOT NULL,              -- unix; ISO-8601 on the way out
     updated_at    REAL    NOT NULL
 );
@@ -162,17 +156,6 @@ CREATE TABLE IF NOT EXISTS task_deps (
     PRIMARY KEY (task_id, depends_on_id)
 );
 
--- An agent as a principal. The key is stored hashed.
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE, projects TEXT,
-    is_admin INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, revoked_at REAL
-);
-
--- A session is one instance of an agent. Ids are never reused.
-CREATE TABLE IF NOT EXISTS agent_sessions (
-    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, transport TEXT,
-    opened_at REAL NOT NULL, renewed_at REAL NOT NULL, closed_at REAL
-);
 
 -- The transition journal: append-only.
 CREATE TABLE IF NOT EXISTS task_events (
@@ -211,14 +194,14 @@ The load-bearing parts:
   SELECT id FROM tasks AS t
    WHERE t.status = 'pending'
      AND (t.assignee_id IS NULL OR t.assignee_id = :me)
-     AND (:scope IS NULL OR t.project = :scope)
+     AND (t.project = :project)   -- only when a project was named
      AND (t.retry_after IS NULL OR t.retry_after <= :now)
      AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks p ON p.id = d.depends_on_id
                       WHERE d.task_id = t.id AND p.status <> 'done')
    ORDER BY t.priority DESC, (t.assignee_id IS NULL), t.id
    LIMIT 1;
   UPDATE tasks SET status='in_progress', assignee_id=:me, attempts=attempts+1,
-                   lease_expires=:lease, session_id=:session, updated_at=:now
+                   lease_expires=:lease, updated_at=:now
    WHERE id = :id AND status = 'pending';
   ```
   Both statements sit in one transaction. `AND status='pending'` in the `UPDATE`
@@ -226,7 +209,7 @@ The load-bearing parts:
 - `list_tasks` does not return `result`, and the limit is clamped to `[1, 500]`.
   The count of unmet dependencies (`waiting_on`) is a subquery in the same
   SELECT — otherwise listing would turn into N+1.
-- `stats` counts inside the scope: otherwise, with a project selected, the
+- `stats` counts inside the filter: otherwise, with a project selected, the
   dashboard chips lie.
 
 **Leases and retries.** A claim sets `lease_expires = now + lease_s` and bumps
@@ -242,40 +225,21 @@ scheduler.
 task to `pending` with `retry_after = now + backoff(attempts)`, with an
 exponential backoff and a ceiling.
 
-**Identity (`services/agents.py`).** A key is stored as a sha256 hash: it is an
-issued secret of 256 random bits, there is nothing to guess, and a slow KDF is
-not needed. `identity_required()` counts revoked keys too — otherwise revoking
-the last key would silently reopen the queue to everyone.
+**No identity (by design).** Noted authenticates nobody: there is no `agents`
+table, no keys, no sessions and no scopes-as-permissions. `assignee_id` and
+`created_by` are parameters, recorded as given.
 
-**Sessions.** A task is held while either guard holds — the lease has not
-expired, or the session is alive — and a lease is taken on every claim. Only
-some clients prove liveness: one that declares `X-Noted-Transport: self-renewing`
-renews in the background, so its silence means a dead process and releases the
-task at once, while an ordinary MCP client sends nothing during a long step and
-its silence proves nothing. Getting
-this wrong in either direction costs something real: session-only would hand an
-HTTP agent's task away after ninety seconds of quiet, lease-only would take it
-away mid-build.
-
-Going quiet does not close a session. Liveness is read from `renewed_at`;
-`closed_at` means a deliberate end (logout, a revoked key). Closing on silence
-would lock a live client out for ever, because it keeps presenting the same id.
-
-A session belongs to one agent and its id is never published: ids travel in
-headers, and knowing one would otherwise be enough to use it. The owner of a
-task is the pair agent-plus-session, which gives fencing without a separate
-claim token — and the check runs whenever the caller is an agent, so omitting
-the header is not a way around it.
+The reasoning is in SPEC.md; the consequence for this layer is that the lease is
+the only thing holding a task. `claim` takes one, `heartbeat` extends it, and
+`reap_expired` hands back whatever ran out. `lease_s=0` opts out of expiry
+entirely, which means the caller has taken on the job of putting the task back
+if its agent dies — a supervisor can do that better than the core can, because
+it is the thing that noticed the process exit.
 
 **Compare-and-set by default.** `set_status` without `if_status` fills in
-`in_progress`. An unconditional write is `force`, refused to agents and left to
-administrators, and a move into a terminal status releases the session —
-otherwise a late agent would overwrite a human's cancellation with its own `done`.
-
-**Scope on reads.** `ensure_scope` and `allowed_projects` run on listing,
-reading, the journal and every write. A scope enforced only on the way into the
-queue would be advisory: a scoped key could still read and rewrite another
-project's work.
+`in_progress`. An unconditional write is `force`, which is what a human at the
+dashboard uses — a late agent reporting `done` on a task somebody cancelled is
+refused, which is the whole point of the default.
 
 **Dependencies.** Dispatch filters on a `NOT EXISTS (... p.status <> 'done')`
 subquery, so "ready to be handed out" is never stored and cannot fall out of
@@ -324,7 +288,6 @@ synchronous and must not block the event loop), and wrapping into the envelope.
   overridden, or an agent would get somebody else's shape of answer);
   `HTTPException` keeps its original status code; anything uncaught becomes
   `internal_error` with a log entry id and no traceback on the wire.
-- `utils/authorization.py` turns headers into a principal for `/api` and `/mcp`.
   `/healthz` and the dashboard need no header.
 - The static files are mounted **last**, after the routers, so the root does not
   swallow `/api`, `/events` or `/mcp`. The directory comes from `NOTED_UI_DIR`.
@@ -388,8 +351,7 @@ code is ours and there is nothing to upgrade.
   stays as it loaded.
 - `src/parts/` — `FilterBar`, `TaskTable`, `NewTaskDialog`, `TaskDialog`
   (`?task=<id>` in the URL), `ConnectDialog` (the MCP address, command and config
-  with copy buttons), `LoginScreen` (signing in with `NOTED_TOKEN`: a browser
-  sends no headers, so the dashboard gets a cookie).
+  with copy buttons). There is no sign-in: the core authenticates nobody.
 - The mark in the header is `Wordmark` from the ui-kit (an inline SVG with
   blinking eyelids inheriting `currentColor`), a vertical separator and the
   product name. The blink keyframes are in `src/index.css`; under
@@ -441,7 +403,7 @@ That is the whole setup, and the only one: `http://host:port/mcp/`.
 mirrors the code tree.
 
 - `services/test_tasks.py` — idempotency by `key`, CAS and conflict, addressed
-  tasks against the pool, the strictness of a project scope, filters,
+  tasks against the pool, the strictness of the project filter, filters,
   `stale_seconds`, migrating an old database, the cursor, and a concurrent claim
   across threads. No application is started.
 - `services/test_lease.py` — an expired lease returns the task to the pool, a
@@ -456,20 +418,16 @@ mirrors the code tree.
   do not mix between tasks.
 - `services/test_cas.py` — safe behaviour by default, and `force` as the explicit
   way to write unconditionally.
-- `services/test_identity.py` — a key proves identity, revocation takes it away,
-  the scope is enforced, a zombie session cannot write, and a dead session frees
-  everything at once.
 - `services/test_rate_limit.py` — a flood from one author is cut, other budgets
   are untouched, anonymous authors share a bucket, an idempotent repeat passes.
 - `services/test_concurrency.py` — what has to hold when two callers arrive at
   once: every claimer gets its own task, one writer wins a compare-and-set.
-- `routes/test_tasks.py` — a case per outcome, HTTP codes, the token middleware,
-  the long poll, and that released work wakes a waiting agent.
+- `routes/test_tasks.py` — a case per outcome, HTTP codes, the long poll, and
+  that released work wakes a waiting agent.
+- `services/test_journal_cursor.py` — the cursor never skips an entry that was
+  still in flight, and never stalls on one that will never arrive.
 - `routes/test_review_findings.py` — one test per defect found in review, so a
   fixed bug cannot come back quietly.
-- `routes/test_identity_http.py` — the key decides who you are, the scope is
-  enforced, a revoked key stops working, a transport session holds a task without
-  a lease, a second instance cannot write, and the dashboard has its own door.
 - `routes/test_events_contract.py` — events carry the whole transition, the
   cursor replays what was missed, and without a cursor the past is not replayed.
 - `routes/test_dashboard.py` — `/api/stats` carries the chrome data and the built
@@ -495,8 +453,7 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
       `failed` once attempts run out.
 - [ ] A task with an open dependency is handed to nobody and shows as waiting.
 - [ ] A foreign agent can neither close nor extend a task it does not hold.
-- [ ] A second instance of the same agent gets `stale_session`.
-- [ ] A scoped agent neither sees nor takes foreign or unscoped tasks.
+- [ ] Claiming inside a project takes neither another project's task nor an unscoped one.
 - [ ] A database created before `project` existed opens and extends itself.
 - [ ] `/mcp` answers an SDK client right after the container starts.
 - [ ] The dashboard shows tasks, filters live in the URL, status changes from the
@@ -522,7 +479,6 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | A long poll ties up a connection and a thread | waiting on a `Condition` (the thread stays free), `timeout_s` clamped to 300 s |
 | The MCP session manager is run twice | the application is built by a factory; each one gets its own server |
 | A tool description promises what the code does not | a test pins the two together |
-| A scope guards writes but not reads | counters, names, the journal and task references all follow it |
 | Two writers decide from the same stale read | `row_lock()` before the decision, a status guard on the write |
 | The journal cursor skips an entry that was still in flight | delivery stops at the last contiguous id |
 | A health check that only proves Python is running | `/healthz` reaches the store |
@@ -530,22 +486,10 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | A task is resurrected forever | the attempt counts on claim; exhaustion means a dead letter |
 | The lease collector dies quietly | the exception is logged and the loop continues |
 | An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |
-| An agent takes another's name | `assignee_id` and `created_by` follow from the key |
-| A scoped key reads or rewrites another project | scope checked on list, read, journal and write |
-| An agent reaches for `force` | refused unless the caller is an administrator |
-| Fencing skipped by omitting a header | the session check runs for every agent call |
-| A session id is presented by another agent | sessions are bound to one agent; ids are not published |
-| A quiet client is locked out for ever | silence makes a session stale, not closed |
-| A revoked key revives its session | a deliberately closed session stays closed |
-| The event stream leaks the journal | `/events` sits behind the same door as `/api` |
-| Identity turned on with no way into the dashboard | the first key needs `NOTED_TOKEN` or an admin key |
 | A chain of dependants hides in `pending` | blocking walks the whole chain |
-| A retried task keeps a stale session | the retry path clears it |
-| Every request writes to renew a session | renewal touches the row once per third of the TTL |
 | Two processes with one key are indistinguishable | the owner is agent-plus-session; fencing by session |
 | The model cannot heartbeat during a long step | the transport renews the session, not the model |
 | A forgotten `if_status` breaks invariants | CAS by default; an unconditional write is an explicit `force` |
-| Revoking the last key reopens the queue | `identity_required()` counts revoked keys too |
 | A looping agent floods the queue | a per-author creation cap; `rate_limited` arrives as a tool error |
 | The journal grows without end | entries of closed tasks are trimmed by age |
 | A pending task nobody can take | `waiting_on` in the list shows the open dependencies |
@@ -554,6 +498,6 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | Open SSE connections pile up | keepalive every 20 s; a dropped connection closes the generator |
 | The dashboard swallows /api, /events or /mcp | static files are mounted last, after the routers |
 | The frontend knows the core's address | it uses relative paths; in development the Vite proxy supplies the address |
-| The container listens on 0.0.0.0 and leaks into the network | only `127.0.0.1:8787` is published; `NOTED_TOKEN` guards `/api` and `/mcp` |
+| The container listens on 0.0.0.0 and leaks into the network | only `127.0.0.1:8787` is published — and nothing beyond that is authenticated, so exposing the port is a decision that needs a proxy in front |
 | Rebuilding the image wipes the tasks | the database is in the `/data` volume, not in an image layer |
 | Settings scatter across the code | the environment is read only in `api/settings.py` |

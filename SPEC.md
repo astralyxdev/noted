@@ -61,19 +61,16 @@ lock; WAL stays on so a `sqlite3` in a neighbouring terminal can still read.
 process lock disappears and the engine does the work instead: a claim takes its
 row with `FOR UPDATE SKIP LOCKED`, so two agents claiming in the same instant
 take two different tasks rather than one of them being told the queue is empty,
-and every read-then-write decision — compare-and-set, ownership, fencing —
-holds its row with `FOR UPDATE` until it has written.
+and every read-then-write decision — compare-and-set, ownership — holds its row
+with `FOR UPDATE` until it has written.
 
 The schema installs itself on startup under both, and columns added after the
 first version are filled in then: an existing database neither breaks nor needs
 a manual migration. Moving between the engines is not automatic — it points the
 core at a different database, it does not carry the tasks over.
 
-Network: the core listens on `127.0.0.1:8787`; MCP is at `/mcp` on that same port.
-An optional `NOTED_TOKEN` is checked by middleware on `/api`, `/mcp`, `/events`
-and `/docs` — the journal is as revealing as the API and the schema describes
-every route, so they sit behind the same door; the
-clients send it in the `X-Noted-Token` header.
+Network: the core listens on `127.0.0.1:8787`, and MCP is at `/mcp` on that
+same port. Nothing about that port is authenticated — see **Identity** below.
 
 ### Task model
 
@@ -82,7 +79,7 @@ clients send it in the `X-Noted-Token` header.
 | `id` | int | primary key, autoincrement |
 | `task` | JSON object | the payload, arbitrary |
 | `status` | enum | see below |
-| `project` | string, nullable | scope: an agent naming a project works only with its tasks |
+| `project` | string, nullable | which project the task belongs to; claiming inside one sees only its tasks |
 | `assignee_id` | UUIDv4/String/Integer, nullable | `null` means the task is in the shared pool |
 | `created_by` | UUIDv4/String/Integer, nullable | who posted it — so delegated work and its results can be found |
 | `parent_id` | int, nullable | the subtask tree, with no scheduler attached |
@@ -93,77 +90,39 @@ clients send it in the `X-Noted-Token` header.
 | `max_attempts` | int, nullable | attempt ceiling; `null` means no retries |
 | `retry_after` | timestamp, nullable | the task is not handed out before this moment |
 | `lease_expires` | timestamp, nullable | lease term; once past, the task returns to the queue |
-| `session_id` | string, nullable | which session holds the task |
 | `depends_on` | list[int] | predecessors that must reach `done` |
 | `waiting_on` | int, read-only | how many predecessors are still open |
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | what `stale_seconds` searches by |
 
-### Identity
+### Identity — deliberately absent
 
-Until a key is issued the core runs as an open queue: anyone may post and claim,
-and `assignee_id` is a self-declared name. The first key turns identity on, and a
-local install is not broken by an upgrade — strictness arrives by an explicit act.
+Noted authenticates nobody. There are no keys to issue, nothing to revoke, no
+sessions and no scopes-as-permissions. `assignee_id` and `created_by` are
+parameters the caller supplies, and the core records them without checking
+them.
 
-**An agent is a principal, not a string.** A key is issued with `noted-keys add`
-and shown once; only its hash is stored. The key arrives in the `X-Noted-Token`
-header and the server derives `assignee_id` from it. Taking another's name is not
-possible: for an agent the `assignee_id` parameter is ignored, and `created_by`
-is filled in by the server too.
+This is not an omission to be filled in later. An agent already has an identity
+in whatever system spawned it — a run id, a worker name, a process — and that
+system can guarantee it is unique in a way a task queue never can. Asking Noted
+to mint a second identity would mean two systems that have to agree, and the
+one holding the credential would be the model, which is the worst place to keep
+one: tool arguments end up in transcripts, summaries and logs.
 
-**The scope is enforced on reading as well as writing.** A key carries a list of
-projects. A scoped agent cannot list, read, claim, modify or read the journal of
-another project's task, and posting into one answers `forbidden`. A scope that
-only guarded the way into the queue would be advisory whatever the documentation
-said.
+What follows from that:
 
-Tasks outside every project stay open to all, and that is deliberate: the shared
-pool is how work crosses scopes. An agent scoped to `pa` may post into the pool
-and an agent scoped to `pb` may execute it. If that is not what you want, give
-every task a project.
-
-**A session is one instance of an agent.** The same key can run in two processes,
-and by name they are indistinguishable. So a task is owned by a pair — agent plus
-session — and a zombie on an old session gets `stale_session` even when the name
-matches. That is fencing, and no separate claim token is needed for it.
-
-**Two guards, not one.** A task is held while **either** holds: the lease has
-not expired, or the session is still alive.
-
-Neither is enough alone. The lease is exactly what a model cannot renew
-mid-step: while a ten-minute build runs it makes no tool calls at all. The
-session is not enough either, because only some clients prove they are alive:
-
-- an **MCP client** sends nothing during a long step, so its silence proves
-  nothing and the lease has to govern;
-- a **supervisor that renews in the background**, declaring itself with
-  `X-Noted-Transport: self-renewing`, is the opposite: its silence means the
-  process is gone, so its tasks are released at once rather than on lease
-  expiry. Writing that supervisor is the agent author's job, not the core's.
-
-So a lease is taken on every claim, session or not, and a live session extends
-the hold past it.
-
-Recovery speed follows the same distinction. A silent session on a transport
-that renews by itself means a dead process, so its tasks are released at once,
-within `NOTED_SESSION_TTL_S` (90 seconds). Everywhere else the lease governs:
-an agent on the HTTP transport should ask for a `lease_s` that covers its
-longest step, or call `heartbeat` as it goes.
-
-`lease_s=0` with no session means no expiry at all — an explicit opt-out.
-
-**Session ids are credentials, not identifiers.** A session belongs to one agent
-and nobody else may present its id; a closed session stays closed, or a revoked
-key could pick its tasks back up. For the same reason `session_id` is not part
-of any response: knowing one would be enough to use it.
-
-**There has to be a way in.** A browser cannot send the header agents use, so the
-dashboard signs in with `NOTED_TOKEN` or with an admin key. Issuing the first
-agent key is refused unless one of those exists, or turning identity on would
-leave every human locked out of their own queue.
-
-What identity does not provide: roles and users inside the dashboard. There is
-one door — whoever signs in is an admin.
+* **Anything that reaches the port has full use of the queue** — posting,
+  claiming, closing, `force`, and the whole journal at `/events`. The core
+  binds to the loopback by default. Exposing it is a decision, and it needs a
+  proxy with its own authentication in front.
+* **`project` is a filter, not a permission.** Claiming inside a project is
+  handed only that project's tasks, which keeps unrelated work from crossing.
+  It stops mistakes, not adversaries.
+* **Ownership is by name.** A task held by `agent-a` answers `not_owner` to
+  anybody else — it is a guard against confusion, not against impersonation.
+* **The lease is the only thing that holds a task.** There is no session to
+  prove an agent is alive, so a claim's `lease_s` has to cover the longest step
+  the agent will take, or it has to call `heartbeat` as it goes.
 
 ### Compare-and-set by default
 
@@ -173,26 +132,20 @@ in `in_progress`, the only state an executor may report from. A forgotten
 `failed` → `done`).
 
 An unconditional write is an explicit `force=true`, **and it is not available to
-an agent**. Administrators use it — the dashboard, the `NOTED_TOKEN` holder, or a
-key issued with `--admin`. An agent reaching for `force` would walk around
-compare-and-set and unblock the dependants of a task it never held.
-
-Fencing is not optional either. When a task is held by a session, a caller that
-sends a different session — or none at all — is refused with `stale_session`.
-Omitting a header must not be a way around a check.
-
-A move into a terminal status releases the session. Otherwise a human would
-cancel a task and a returning agent would silently overwrite that with `done`.
+an agent**. It is what a human at the dashboard reaches for. An executor using
+it walks around compare-and-set and unblocks the dependants of a task it never
+held — nothing stops it, because nothing here authenticates anyone, so it is a
+convention the agent author enforces rather than a rule the core can.
 
 ### Transition semantics
 
 | Event | What happens |
 |---|---|
-| `claim` | `pending` → `in_progress`, `attempts+1`, the task binds to the session |
-| the executor closes it | `in_progress` → `done` / `failed` / `blocked`, the session is released |
+| `claim` | `pending` → `in_progress`, `attempts+1`, a lease is taken |
+| the executor closes it | `in_progress` → `done` / `failed` / `blocked`, the lease is released |
 | a failure with attempts left | `failed` turns into `pending` with a `retry_after` pause |
 | a failure with attempts gone | it stays `failed` — that is the dead letter |
-| the lease expired or the session died | `in_progress` → `pending` (or `failed` when attempts are gone) |
+| the lease expired | `in_progress` → `pending` (or `failed` when attempts are gone) |
 | a predecessor reached `done` | waiting tasks go `blocked` → `pending` if nothing else is open |
 | a predecessor `failed` or was `cancelled` | waiting tasks go `pending` → `blocked` |
 | a human in the dashboard | any transition, through `force=true` |
@@ -217,8 +170,8 @@ A contract, not an implementation detail:
 priority ↓ → addressed before the pool → FIFO by id
 ```
 
-Never handed out: tasks still inside a post-failure pause, tasks with open
-dependencies, and tasks of other projects for a scoped key.
+Never handed out: tasks still inside a post-failure pause, and tasks with open
+dependencies.
 
 Priority comes first on purpose. Were addressing first, a low-priority task
 addressed to an agent would overtake an urgent one from the pool, and urgency
@@ -253,8 +206,8 @@ resource between agents.
 ### Projects
 
 A task may belong to a project — an arbitrary string, with `null` meaning
-"outside every project". The scope is strict: an agent naming a project in
-`claim_task` gets neither another project's task nor one with no project. Name
+"outside every project". The filter is strict: naming a project in `claim_task`
+gets neither another project's task nor one with no project. Name
 none and it takes from anywhere. This lets several projects share one database
 without getting in each other's way, and needs neither separate instances nor a
 project table: the list of projects is derived from the tasks themselves.
@@ -282,8 +235,6 @@ transition is allowed, and `if_status` is what controls them.
 | `GET` | `/api/tasks/{id}/events` | the transition journal of a task |
 | `GET` | `/api/stats` | per-status counters, plus project and assignee lists |
 | `GET` | `/events` | the SSE stream of changes |
-| `POST` | `/api/sessions/renew` | session renewal by the transport |
-| `POST` | `/api/login` · `/api/logout` | the dashboard door (a browser sends no headers) |
 | `POST`/`GET` | `/mcp/` | MCP over the streamable-http transport |
 | `GET` | `/healthz` | liveness |
 
@@ -313,10 +264,7 @@ it. The field is not called `status` so it cannot be confused with the task's ow
 | `not_found` | false | 404 | no task with that id |
 | `status_conflict` | false | 409 | `if_status` did not match, or the task is in another state |
 | `not_owner` | false | 409 | the task is in progress with another executor |
-| `stale_session` | false | 409 | another instance of the same agent holds it |
-| `forbidden` | false | 403 | the project is outside the key's scope |
 | `parent_not_found` | false | 404 | the given `parent_id` does not exist |
-| `unauthorized` | false | 401 | `NOTED_TOKEN` is set and `X-Noted-Token` did not match |
 | `validation_error` | false | 422 | malformed input: wrong type, unknown status, empty `assignee_id` |
 | `rate_limited` | false | 429 | the author posts faster than the limit |
 | `internal_error` | false | 500 | everything else, with a log entry id |
@@ -347,14 +295,13 @@ get_task(task_id, with_events[bool=false])
 
 set_status(task_id, status[enum], result[JSON/null], if_status[enum/null],
            assignee_id[.../null], force[bool=false])
-    -> {ok, outcome: updated|not_found|status_conflict|not_owner|stale_session|validation_error, task}
+    -> {ok, outcome: updated|not_found|status_conflict|not_owner|validation_error, task}
 
 claim_task(assignee_id, project[string/null], timeout_s[number=0], lease_s[number/null])
-    # with a key: assignee_id comes from the key, and a session replaces the lease
-    -> {ok, outcome: claimed|empty|validation_error|forbidden, task}
+    -> {ok, outcome: claimed|empty|validation_error, task}
 
 heartbeat(task_id, assignee_id, lease_s[number/null])
-    -> {ok, outcome: updated|not_found|status_conflict|not_owner|stale_session, task}
+    -> {ok, outcome: updated|not_found|status_conflict|not_owner, task}
 ```
 
 `set_task` — when `key` matches an existing task nothing is created:
@@ -448,9 +395,6 @@ can do too.
   `EventSource` it falls back to polling every 10 seconds.
 - **Connect MCP** — a header button showing the server address, the command for a
   client and a ready config snippet, each copied in one click.
-- **Sign in** — with `NOTED_TOKEN` set the dashboard asks for it and keeps a pass
-  in a cookie: a browser cannot send the header the agents use. There are no
-  roles — whoever signs in is an admin.
 - **The mark** — the Astralyx logo from the ui-kit, a vertical separator, and the
   product name to the right.
 
@@ -473,7 +417,8 @@ What is missing and why:
 - **It launches no executors.** Keeping agents alive is a supervisor's job, outside.
 - **No contract on the shape of a payload.** `task` is arbitrary JSON; agreeing on
   its fields stays with whoever writes the orchestration.
-- **No roles or users.** The dashboard has one door.
+- **No authentication, roles or users.** Anything that reaches the port has
+  full use of the queue; identity belongs to whatever runs the agents.
 - **No replication or HA.** There is one writer; if the core falls, the swarm
   stops. That is the price of having no broker.
 - **No capability routing.** A task is addressed by a string, not to "an agent
@@ -481,6 +426,6 @@ What is missing and why:
 - **No quotas and no priority ageing.** The creation limit is a guard rail against
   a loop, not a fair division of the queue.
 
-Re-queueing stuck tasks needs no orchestrator: an expired lease or a dead session
-is collected by the service itself. `get_tasks(stale_seconds=...)` and the
+Re-queueing stuck tasks needs no orchestrator: an expired lease is collected by
+the service itself. `get_tasks(stale_seconds=...)` and the
 journal remain for understanding what happened.

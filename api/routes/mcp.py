@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from api.models.envelope import Outcome, body, envelope
@@ -20,8 +20,6 @@ from api.routes.tasks import POLL_CEILING_S
 from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
 from api.utils import events, run_service
-from api.utils.authorization import ANONYMOUS, Principal
-from api.utils.authorization import principal_from, transport_of
 from api.utils.tool_docs import (
     CLAIM_TASK,
     GET_TASK,
@@ -37,16 +35,6 @@ INSTRUCTIONS = (
     "(timeout_s>0 waits for a task to appear), report back with set_status. "
     "Every answer carries an `outcome` field — judge the result by it."
 )
-
-
-def _who(ctx: Context | None) -> Principal:
-    """Who is calling the tool. The middleware has already checked the headers
-    and renewed the session for this request; here we only read identity out of
-    them, so it never comes from the arguments — and renewing a second time
-    would be a second write under the global lock for one call."""
-    if ctx is None:
-        return ANONYMOUS
-    return principal_from(ctx.headers, transport_of(ctx.headers, "/mcp"), renew=False) or ANONYMOUS
 
 
 def _out(env) -> dict[str, Any]:
@@ -67,11 +55,7 @@ async def set_task(
     priority: int = 0,
     max_attempts: int | None = None,
     depends_on: list[int] | None = None,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    who = _who(ctx)
-    if who.agent and not who.agent.may_touch(project):
-        return _out(envelope(Outcome.forbidden, f"project {project} is outside the key's scope", task=None))
     try:
         created_task, created = await run_service(
             tasks_service.create,
@@ -80,11 +64,10 @@ async def set_task(
             assignee_id=assignee_id,
             parent_id=parent_id,
             key=key,
-            created_by=who.name or created_by,
+            created_by=created_by,
             priority=priority,
             max_attempts=max_attempts,
             depends_on=depends_on,
-            allowed_projects=who.projects,
         )
     except TaskError as exc:
         return _out(envelope(exc.code, exc.message))
@@ -104,7 +87,6 @@ async def get_tasks(
     stale_seconds: float | None = None,
     before_id: int | None = None,
     limit: int = 50,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
     try:
         found = await run_service(
@@ -117,7 +99,6 @@ async def get_tasks(
             parent_id=parent_id,
             stale_seconds=stale_seconds,
             before_id=before_id,
-            allowed_projects=_who(ctx).projects,
             limit=limit,
         )
     except TaskError as exc:
@@ -125,15 +106,13 @@ async def get_tasks(
     return _out(envelope(Outcome.ok, tasks=found, count=len(found)))
 
 
-async def get_task(task_id: int, with_events: bool = False, ctx: Context | None = None) -> dict[str, Any]:
+async def get_task(task_id: int, with_events: bool = False) -> dict[str, Any]:
     try:
         found = await run_service(tasks_service.get, task_id)
     except TaskError as exc:
         return _out(envelope(exc.code, exc.message))
     if found is None:
         return _out(envelope(Outcome.not_found, f"task {task_id} does not exist", task=None))
-    if not _who(ctx).may_touch(found.project):
-        return _out(envelope(Outcome.forbidden, f"project {found.project} is outside the key's scope", task=None))
     if not with_events:
         return _out(envelope(Outcome.ok, task=found))
     log = await run_service(tasks_service.events, task_id)
@@ -147,16 +126,7 @@ async def set_status(
     if_status: str | None = None,
     assignee_id: str | int | None = None,
     force: bool = False,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    who = _who(ctx)
-    if force and who.agent is not None and not who.is_admin:
-        return _out(envelope(Outcome.forbidden, "force is for administrators", task=None))
-
-    existing = await run_service(tasks_service.get, task_id)
-    if existing is not None and not who.may_touch(existing.project):
-        return _out(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
-
     try:
         outcome, task = await run_service(
             tasks_service.set_status,
@@ -164,9 +134,7 @@ async def set_status(
             status=status,
             result=result,
             if_status=if_status,
-            actor=who.name or assignee_id,
-            session_id=who.session_id,
-            strict_session=who.agent is not None and not who.is_admin,
+            actor=assignee_id,
             force=force,
         )
     except TaskError as exc:
@@ -188,7 +156,6 @@ async def set_status(
             f"{task.status.value if task else ''}; an unconditional write is force=true"
         ),
         Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
-        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return _out(envelope(outcome, message, task=task))
 
@@ -198,19 +165,15 @@ async def claim_task(
     project: str | None = None,
     timeout_s: float = 0,
     lease_s: float | None = None,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    who = _who(ctx)
     deadline = time.monotonic() + min(max(timeout_s, 0.0), MAX_TIMEOUT_S)
     while True:
         try:
             task = await run_service(
                 tasks_service.claim,
-                who.name or assignee_id,
+                assignee_id,
                 project=project,
                 lease_s=lease_s,
-                session_id=who.session_id,
-                allowed_projects=who.projects,
             )
         except TaskError as exc:
             return _out(envelope(exc.code, exc.message))
@@ -230,21 +193,13 @@ async def heartbeat(
     task_id: int,
     assignee_id: str | int,
     lease_s: float | None = None,
-    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    who = _who(ctx)
-    # The answer carries the whole task, result included: a read before a write.
-    existing = await run_service(tasks_service.get, task_id)
-    if existing is not None and not who.may_touch(existing.project):
-        return _out(envelope(Outcome.forbidden, f"project {existing.project} is outside the key's scope", task=None))
     try:
         outcome, task = await run_service(
             tasks_service.heartbeat,
             task_id=task_id,
-            assignee_id=who.name or assignee_id,
+            assignee_id=assignee_id,
             lease_s=lease_s,
-            session_id=who.session_id,
-            strict_session=who.agent is not None and not who.is_admin,
         )
     except TaskError as exc:
         # Without this the reason never reaches the model: the SDK reports an
@@ -254,7 +209,6 @@ async def heartbeat(
         Outcome.not_found: f"task {task_id} does not exist",
         Outcome.status_conflict: f"the task is not in progress but {task.status.value if task else ''}",
         Outcome.not_owner: f"the task is held by {task.assignee_id if task else ''}",
-        Outcome.stale_session: "another instance of this agent holds the task",
     }.get(outcome)
     return _out(envelope(outcome, message, task=task))
 

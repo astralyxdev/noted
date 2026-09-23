@@ -94,14 +94,6 @@ export function ConnectDialog({ open, onOpenChange }: Props) {
               <code className="font-mono text-xs">set_status</code>,{' '}
               <code className="font-mono text-xs">claim_task</code>.
             </p>
-            <p>
-              With <code className="font-mono text-xs">NOTED_TOKEN</code> set, add the header:{' '}
-              <code className="font-mono text-xs">--header "X-Noted-Token: …"</code>.
-            </p>
-            <p>
-              A client without HTTP transport connects through the stdio adapter:{' '}
-              <code className="font-mono text-xs">noted-mcp</code> from the same image.
-            </p>
           </section>
         </DialogBody>
       </DialogContent>

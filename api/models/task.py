@@ -102,10 +102,6 @@ class ClaimRequest(BaseModel):
     lease_s: float | None = Field(default=None, ge=0.0)
 
 
-class LoginRequest(BaseModel):
-    token: str
-
-
 class HeartbeatRequest(BaseModel):
     assignee_id: ActorId
     lease_s: float | None = Field(default=None, ge=0.0)

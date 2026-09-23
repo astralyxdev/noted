@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { ApiError, api, NONE, STATUSES, type Filters, type Stats, type Status, type TaskSummary } from '@/api'
+import { api, NONE, STATUSES, type Filters, type Stats, type Status, type TaskSummary } from '@/api'
 
 const DEFAULT_LIMIT = 50
 
@@ -85,7 +85,6 @@ export function useDashboard(filters: Filters) {
   const [projects, setProjects] = useState<string[]>([])
   const [assignees, setAssignees] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [locked, setLocked] = useState(false)
   const [pending, setPending] = useState(true)
   const [more, setMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -119,10 +118,8 @@ export function useDashboard(filters: Filters) {
       setProjects(overview.projects)
       setAssignees(overview.assignees)
       setError(null)
-      setLocked(false)
     } catch (cause) {
-      if (cause instanceof ApiError && cause.outcome === 'unauthorized') setLocked(true)
-      else setError(cause instanceof Error ? cause.message : String(cause))
+      setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       inFlight.current = false
       setPending(false)
@@ -173,7 +170,7 @@ export function useDashboard(filters: Filters) {
     void refresh()
   }, [refresh])
 
-  return { tasks, stats, projects, assignees, error, locked, pending, more, loadingMore, loadMore, refresh }
+  return { tasks, stats, projects, assignees, error, pending, more, loadingMore, loadMore, refresh }
 }
 
 /** Pulls the next page once the bottom of the list approaches the screen. */
@@ -198,24 +195,13 @@ export function useNearBottom(enabled: boolean, onReach: () => void) {
 
 export type LiveState = 'connecting' | 'live' | 'down'
 
-/** The server announces changes itself. There is no timer-based polling.
- *
- * `enabled` is what stops the stream being opened before the user is signed
- * in. `/events` answers 401 then, and a non-2xx first response is fatal to an
- * EventSource — the browser does not retry it — so the stream stayed dead for
- * the rest of the session and live updates never arrived, with only a reload
- * to fix it.
- */
-export function useLive(onChange: () => void, enabled = true): LiveState {
+/** The server announces changes itself. There is no timer-based polling. */
+export function useLive(onChange: () => void): LiveState {
   const [state, setState] = useState<LiveState>('connecting')
   const handler = useRef(onChange)
   handler.current = onChange
 
   useEffect(() => {
-    if (!enabled) {
-      setState('connecting')
-      return
-    }
     // TS narrows `'EventSource' in window` to always-true, so check the type.
     if (typeof EventSource === 'undefined') {
       const timer = setInterval(() => handler.current(), 10_000)
@@ -252,7 +238,7 @@ export function useLive(onChange: () => void, enabled = true): LiveState {
       source.close()
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [enabled])
+  }, [])
 
   return state
 }
