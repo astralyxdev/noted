@@ -65,7 +65,7 @@ noted/
 ├── requirements.txt
 ├── pyproject.toml               # the noted-api entry point
 ├── .dockerignore · .gitignore
-├── README.md · SPEC.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
+├── README.md · SPEC.md · MCP.md · RECIPES.md · TECHNICAL_DOCUMENTATION.md
 ├── deploy/
 │   ├── Dockerfile               # two stages: Node builds the front, Python serves it
 │   └── docker-compose.yml       # core + PostgreSQL, loopback-only port, volumes

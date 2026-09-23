@@ -108,7 +108,8 @@ claude mcp add --transport http noted http://127.0.0.1:8787/mcp/
 ```
 
 The same address, command and a ready-made config snippet are behind the
-**Connect MCP** button in the dashboard header.
+**Connect MCP** button in the dashboard header. Every tool, its parameters and
+the outcomes it can answer with are in [MCP.md](MCP.md).
 
 The executor loop is short:
 
@@ -358,9 +359,11 @@ Requirements: Python ≥ 3.11, Node ≥ 20 (only to build the dashboard).
 
 ## Documentation
 
+- [MCP.md](MCP.md) — the tool surface an agent sees: every tool, its parameters
+  and the outcomes it can answer with, generated from the server's own schema.
 - [RECIPES.md](RECIPES.md) — acceptance through a verifier task, a branch or
   worktree in the payload, a supervisor for agents, integrations on events.
 - [SPEC.md](SPEC.md) — the contract: model, statuses and transitions, outcomes,
-  dispatch order, identity, the event format.
+  dispatch order, why there is no identity, the event format.
 - [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) — how it is built and
   why, an acceptance checklist and a table of risks.

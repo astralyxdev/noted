@@ -117,7 +117,7 @@ def test_nothing_written_for_a_reader_points_at_something_deleted():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    written = ["README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", ".env.example"]
+    written = ["README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", "MCP.md", ".env.example"]
     written += [str(f.relative_to(root)) for f in (root / "dashboard" / "src").rglob("*.tsx")]
     for name in written:
         for number, line in enumerate((root / name).read_text(encoding="utf-8").splitlines(), 1):
@@ -225,7 +225,7 @@ def test_the_documentation_does_not_speak_of_sessions_renewal_or_signing_in():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    for name in ("README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", ".env.example"):
+    for name in ("README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", "MCP.md", ".env.example"):
         for number, line in enumerate((root / name).read_text(encoding="utf-8").splitlines(), 1):
             lowered = line.lower()
             if any(note.lower() in lowered for note in ALLOWED):
@@ -243,3 +243,13 @@ def test_every_tool_description_lists_its_outcomes():
     for name in ("SET_TASK", "GET_TASKS", "GET_TASK", "SET_STATUS", "CLAIM_TASK", "HEARTBEAT"):
         text = getattr(tool_docs, name)
         assert "Outcomes:" in text, f"{name} never tells the agent what it can answer"
+
+
+def test_every_document_is_reachable_from_the_readme():
+    """A reference nothing links to is a reference nobody reads."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for doc in sorted(p.name for p in root.glob("*.md") if p.name != "README.md"):
+        assert f"({doc})" in readme, f"{doc} is not linked from the README"
