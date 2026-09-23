@@ -97,10 +97,10 @@ same port. Nothing about that port is authenticated — see **Identity** below.
 
 ### Identity — deliberately absent
 
-Noted authenticates nobody. There are no keys to issue, nothing to revoke, no
-sessions and no scopes-as-permissions. `assignee_id` and `created_by` are
-parameters the caller supplies, and the core records them without checking
-them.
+Noted authenticates nobody. There are no keys to issue and nothing to revoke,
+no sessions, and a project is a filter rather than a permission. `assignee_id`
+and `created_by` are parameters the caller supplies, and the core records them
+without checking them.
 
 This is not an omission to be filled in later. An agent already has an identity
 in whatever system spawned it — a run id, a worker name, a process — and that
@@ -120,9 +120,9 @@ What follows from that:
   It stops mistakes, not adversaries.
 * **Ownership is by name.** A task held by `agent-a` answers `not_owner` to
   anybody else — it is a guard against confusion, not against impersonation.
-* **The lease is the only thing that holds a task.** There is no session to
-  prove an agent is alive, so a claim's `lease_s` has to cover the longest step
-  the agent will take, or it has to call `heartbeat` as it goes.
+* **The lease is the only thing that holds a task.** Nothing else watches
+  whether an agent is alive, so a claim's `lease_s` has to cover the longest
+  step the agent will take, or it has to call `heartbeat` as it goes.
 
 ### Compare-and-set by default
 
@@ -329,9 +329,10 @@ seconds and answering `outcome="empty"` when it runs out. That is the promised
 
 ### The event stream
 
-`GET /events` sits behind the same door as `/api` and `/mcp`: the journal carries
-actors, project names and payload details, and `?after=0` would replay all of it
-to anyone who reached the port.
+`GET /events` is open like everything else, and it is the most revealing thing
+on the port: the journal carries actors, project names and payload details, and
+`?after=0` replays all of it to anyone who asks. That is the cost of having no
+door, and the reason the port stays on the loopback.
 
 It is a public contract, not dashboard decoration. Every change
 arrives as a journal entry:

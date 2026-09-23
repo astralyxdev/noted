@@ -226,8 +226,8 @@ task to `pending` with `retry_after = now + backoff(attempts)`, with an
 exponential backoff and a ceiling.
 
 **No identity (by design).** Noted authenticates nobody: there is no `agents`
-table, no keys, no sessions and no scopes-as-permissions. `assignee_id` and
-`created_by` are parameters, recorded as given.
+table, no keys, no sessions, and a project is a filter rather than a
+permission. `assignee_id` and `created_by` are parameters, recorded as given.
 
 The reasoning is in SPEC.md; the consequence for this layer is that the lease is
 the only thing holding a task. `claim` takes one, `heartbeat` extends it, and
@@ -317,10 +317,9 @@ application a factory.
 
 There is no second transport. A stdio adapter existed and was removed: it was a
 whole process, a second code path and a second set of failure modes, all to
-reach a service that was already listening on a port. What it did uniquely —
-renewing the session in the background so a long step could not lose the task —
-is now a header any supervisor can send (`X-Noted-Transport: self-renewing`),
-which is the part that could not be built on top.
+reach a service that was already listening on a port. The one thing it did
+uniquely — keeping a task alive through a long step without the model's
+involvement — is now the supervisor's job, and `lease_s` is what it sets.
 
 Tool descriptions live in `utils/tool_docs.py` — one source for the tools and
 the JSON API, or the texts a model reads would drift apart from the behaviour.
@@ -487,8 +486,7 @@ fixture: the in-memory ASGI transport does not deliver a stream incrementally.
 | The lease collector dies quietly | the exception is logged and the loop continues |
 | An agent closes another's work | `assignee_id` in `set_status`/`heartbeat`, outcome `not_owner` |
 | A chain of dependants hides in `pending` | blocking walks the whole chain |
-| Two processes with one key are indistinguishable | the owner is agent-plus-session; fencing by session |
-| The model cannot heartbeat during a long step | the transport renews the session, not the model |
+| The model cannot heartbeat during a long step | `lease_s` covers the step, or a supervisor puts the task back when the child exits |
 | A forgotten `if_status` breaks invariants | CAS by default; an unconditional write is an explicit `force` |
 | A looping agent floods the queue | a per-author creation cap; `rate_limited` arrives as a tool error |
 | The journal grows without end | entries of closed tasks are trimmed by age |

@@ -75,10 +75,35 @@ def test_a_health_check_that_checks_nothing_is_not_a_health_check(monkeypatch):
 #: sends a reader after something that is not there.
 GONE = (
     "mcp_adapter", "noted-mcp", "NOTED_API", "NOTED_KEY", "api_unavailable",
-    "noted-keys", "NOTED_TOKEN", "X-Noted-Token", "stale_session", "agent_sessions",
+    "noted-keys", "NOTED_TOKEN", "X-Noted-Token", "X-Noted-Session",
+    "X-Noted-Transport", "NOTED_SESSION_TTL_S", "stale_session", "agent_sessions",
+    "/api/login", "/api/logout", "sessions/renew", "self-renewing", "--admin",
 )
 
-#: The passages allowed to name them: the notes explaining the removals.
+#: Behaviour that was removed. Identifiers are the easy half: prose describing
+#: a mechanism that no longer exists passes every spelling check, and the first
+#: version of this test let four such passages through — a README promising
+#: that "the transport renews the session" is worse than a stale file path,
+#: because somebody will plan their heartbeats around it.
+GONE_BEHAVIOUR = (
+    "fencing",
+    "renews the session",
+    "renews its session",
+    "both guards",
+    "either guard",
+    "agent-plus-session",
+    "is the one exception",
+    "behind the same door",
+    "scoped key",
+    "scoped agent",
+    "admin key",
+)
+
+#: `session` alone cannot be banned: the MCP transport really does have a
+#: session manager. These are the words that make an occurrence legitimate.
+SESSION_IS_FINE = ("session manager", "session_manager", "streamable", "Mcp-Session", "no sessions")
+
+#: The passages allowed to name what was removed: the notes explaining it.
 ALLOWED = ("A stdio adapter existed and was removed", "authenticates nobody")
 
 
@@ -100,6 +125,12 @@ def test_nothing_written_for_a_reader_points_at_something_deleted():
                 continue
             for dead in GONE:
                 assert dead not in line, f"{name}:{number} still refers to {dead}: {line.strip()}"
+            for dead in GONE_BEHAVIOUR:
+                assert dead not in line.lower(), (
+                    f"{name}:{number} still describes {dead!r}, which the code no longer does: {line.strip()}"
+                )
+            if "session" in line.lower() and not any(ok.lower() in line.lower() for ok in SESSION_IS_FINE):
+                raise AssertionError(f"{name}:{number} mentions a session; there are none: {line.strip()}")
 
 
 def test_the_readme_settings_table_matches_the_code():

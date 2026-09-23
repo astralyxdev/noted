@@ -30,10 +30,10 @@ the same task. Noted solves that, and a few things that follow from it:
 
 - **Claiming is atomic.** However many agents take work at the same moment,
   every task goes to exactly one of them.
-- **A crashed agent does not hold work.** A task is held by a lease and by a
-  session, and the transport renews the session rather than the model, so a
-  ten-minute build is no problem. When the process dies its work comes back by
-  itself. Not "you can see it is stuck" but "it fixed itself".
+- **A crashed agent does not hold work.** A task is held by a lease. When it
+  runs out the task returns to the queue by itself — not "you can see it is
+  stuck" but "it fixed itself". The lease is the only guard, so ask for one
+  that covers your longest step, or call `heartbeat` as you go.
 - **Failures retry with a pause.** `max_attempts` returns a task to the queue
   with a growing backoff; when attempts run out it stays `failed` — that is the
   dead letter.
@@ -64,7 +64,10 @@ isolation of working copies, launching agents and the shape of a payload are
 assembled on top and stay with whoever writes the orchestration — [RECIPES.md](RECIPES.md)
 shows the primitive is enough for that.
 
-Identity is the one exception: it cannot be built on top, so it lives in the core.
+Identity is not in the core either. An agent already has one wherever it was
+spawned, and that system can guarantee it is unique in a way a task queue
+cannot — so `assignee_id` is a parameter Noted records rather than a claim it
+checks.
 
 ## Quick start
 
@@ -182,11 +185,12 @@ dependencies and tasks of other projects are never handed out. Starvation is
 possible and deliberate: a stream of high-priority work can hold off the
 low-priority indefinitely, and there is no priority ageing in the core.
 
-**A lease** is taken on every claim, session or not. It is renewed by
-`heartbeat`, and a task is released only when both guards are gone: the lease has
-expired and no live session holds it. A silent session on a transport that
-renews by itself is treated as a dead process and releases its tasks at once.
-`lease_s=0` with no session means no expiry.
+**A lease** is taken on every claim and renewed by `heartbeat`. When it expires
+the task returns to the queue, which is the whole recovery story: nothing else
+watches whether an agent is alive. A model cannot renew anything mid-step, so
+either the lease covers the longest step or the agent heartbeats between steps.
+`lease_s=0` takes no lease at all and nothing will ever reclaim the task —
+including if its agent dies.
 
 **Retries**: `max_attempts` turns a failure into a return to the queue with an
 exponential pause. Exhausted attempts leave the task `failed`.
@@ -217,9 +221,7 @@ it missed. Integrations are built on that rather than on polling.
 | `POST` | `/api/tasks/{id}/heartbeat` | extend the lease |
 | `GET` | `/api/tasks/{id}/events` | the transition journal of a task |
 | `GET` | `/api/stats` | counters, plus the project and assignee lists |
-| `GET` | `/events` | the SSE stream of changes (behind the same door as `/api`) |
-| `POST` | `/api/sessions/renew` | session renewal by the transport |
-| `POST` | `/api/login` · `/api/logout` | the dashboard door |
+| `GET` | `/events` | the SSE stream of changes |
 | `POST`/`GET` | `/mcp/` | MCP over the streamable-http transport |
 | `GET` | `/healthz` | liveness |
 
