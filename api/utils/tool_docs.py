@@ -38,7 +38,8 @@ by a dead agent is found.
 before_id is the paging cursor: the next page is everything older than that id.
 There is deliberately no offset — new tasks keep arriving while you page, and
 an offset would start skipping rows.
-The result field is not included in a list; use get_task for it. Outcome: ok."""
+The result field is not included in a list; use get_task for it.
+Outcomes: ok."""
 
 GET_TASK = """One task in full, with its result and its dependencies.
 

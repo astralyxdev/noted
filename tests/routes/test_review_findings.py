@@ -233,3 +233,13 @@ def test_the_documentation_does_not_speak_of_sessions_renewal_or_signing_in():
             for word, excuses in BANNED.items():
                 if word in lowered and not any(excuse in lowered for excuse in excuses):
                     raise AssertionError(f"{name}:{number} says {word!r}: {line.strip()}")
+
+
+def test_every_tool_description_lists_its_outcomes():
+    """An agent is told to judge by `outcome`, so every tool has to say which
+    ones it can answer with. `get_tasks` was the one that did not."""
+    from api.utils import tool_docs
+
+    for name in ("SET_TASK", "GET_TASKS", "GET_TASK", "SET_STATUS", "CLAIM_TASK", "HEARTBEAT"):
+        text = getattr(tool_docs, name)
+        assert "Outcomes:" in text, f"{name} never tells the agent what it can answer"
