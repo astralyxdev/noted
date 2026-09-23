@@ -98,10 +98,13 @@ class ClaimRequest(BaseModel):
     assignee_id: ActorId
     project: str | None = None
     timeout_s: float = Field(default=0.0, ge=0.0)
-    #: Lease length. Null means no lease: the task stays with its holder.
+    #: How long the task is held. Null takes the default (NOTED_LEASE_S, 300s);
+    #: it is 0 that means no lease at all, and then nothing ever reclaims it.
     lease_s: float | None = Field(default=None, ge=0.0)
 
 
 class HeartbeatRequest(BaseModel):
     assignee_id: ActorId
+    #: The new length. Null takes the default, which ends a `lease_s=0` claim's
+    #: opt-out — pass 0 again to keep it.
     lease_s: float | None = Field(default=None, ge=0.0)

@@ -87,3 +87,21 @@ def test_claim_without_lease_s_still_takes_a_lease():
     service.create({"title": "naive agent"})
     taken = service.claim("agent-naive")
     assert taken.lease_expires is not None, "by default a task is leased, not held forever"
+
+
+def test_the_lease_fields_document_what_null_actually_does():
+    """The schema comment said null meant no lease. It means the default, and
+    an agent that believed otherwise would lose a long task after five minutes.
+    """
+    import inspect
+
+    from api.models import task as model
+
+    source = inspect.getsource(model)
+    assert "Null means no lease" not in source
+
+    service.create({"title": "defaulted"})
+    assert service.claim("a").lease_expires is not None, "null takes the default lease"
+
+    service.create({"title": "opted out"})
+    assert service.claim("b", lease_s=0).lease_expires is None, "0 is the opt-out"
