@@ -55,16 +55,22 @@ there).
 Compare-and-set is on by default: with no `if_status` the server checks that
 the task is still in_progress, the only state an executor may report from. A
 mismatch answers outcome="status_conflict" with the current state, so two
-agents cannot finish the same task. Pass `if_status` to check a different
-state, or force=true to write unconditionally — that is a human overriding the
-queue, not an executor that forgot a parameter.
+agents cannot finish the same task, and a task somebody cancelled under you
+cannot be reopened by a late "done". Pass `if_status` to check a different
+state instead.
 
-assignee_id says who you are. A task held by somebody else answers
-outcome="not_owner", so another agent's work is not closed by mistake.
+force=true skips the check. It is meant for a human overriding the queue, and
+nothing enforces that: there is no authentication, so it works for anyone who
+calls it. Using it as an executor walks around every guarantee above.
+
+assignee_id says who you are, and is believed. A task in_progress under a
+different assignee answers outcome="not_owner", so another agent's work is not
+closed by mistake.
 
 If the task has max_attempts and attempts remain, status failed does not leave
 it failed: it returns to the queue after a pause, and the answer will carry
-status="pending". That is expected.
+status="pending". That is expected — and it happens with force=true too, so
+force is not a way to drive a retriable task straight to failed.
 Outcomes: updated, not_found, status_conflict, not_owner."""
 
 CLAIM_TASK = """Atomically take the next task and move it to in_progress.
@@ -77,10 +83,12 @@ project narrows the search strictly: naming a project excludes both other
 projects' tasks and tasks with no project at all.
 timeout_s=0 takes a task if one is there; timeout_s>0 waits for one to appear
 for up to N seconds, which is cheaper than polling. With nothing to wait for
-the answer is outcome="empty".
+the answer is outcome="empty". N is capped at 300 seconds — ask for more and
+you wait 300.
 
-lease_s is the lease length, 300 seconds by default. Unless it is renewed the
-task returns to the queue on its own, so a crashed agent's work never hangs.
+lease_s is the lease length, 300 seconds by default and capped at 86400.
+Unless it is renewed the task returns to the queue on its own, so a crashed
+agent's work never hangs.
 The other side of that: work past the lease in silence and another agent takes
 the task, with both of you doing it. So either call heartbeat as you go or ask
 for a lease that covers the worst case. lease_s=0 takes no lease at all, which
@@ -92,6 +100,10 @@ HEARTBEAT = """Extend a task's lease: "I am alive and still working on it".
 Call it periodically while you work, well inside lease_s. Stop calling and the
 lease expires, handing the task to another agent. Only your own task can be
 extended, and only while it is in_progress.
+
+lease_s sets the new length and defaults to 300 seconds — so calling this
+without it on a task you claimed with lease_s=0 ends that opt-out and gives the
+task an expiry it did not have. Pass lease_s=0 again to keep it.
 Outcomes: updated, not_found, status_conflict, not_owner."""
 
 #: Outcomes an agent must see as a tool error rather than as a result.

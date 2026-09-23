@@ -164,3 +164,72 @@ def test_every_test_file_the_documentation_lists_exists():
     assert listed, "nothing was found to check — the pattern stopped matching"
     missing = {name for name in listed if not (root / "tests" / name).exists()}
     assert not missing, f"the documentation lists tests that do not exist: {sorted(missing)}"
+
+
+def test_every_path_in_the_readme_api_table_is_a_real_route():
+    """The table listed three endpoints that had been deleted.
+
+    Checked against the schema the application publishes, plus the mounts that
+    never reach it (`/mcp/`, and `/healthz`, which is deliberately out of the
+    schema). Requesting the paths instead would be a better test of reality and
+    a worse one of patience: `/events` is a stream that never ends.
+
+    `{id}` in the table is compared by shape, not by name — the route calls it
+    `{task_id}`, and that is presentation rather than drift.
+    """
+    import re
+    from pathlib import Path
+
+    import main
+
+    def shape(path: str) -> str:
+        return re.sub(r"\{[^}]+\}", "{}", path.rstrip("/")) or "/"
+
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+    table = re.search(r"## HTTP API\n(.*?)\n\n", readme, re.S)
+    assert table, "the HTTP API table is gone from the README"
+
+    documented = {shape(m) for m in re.findall(r"\| `(/[^`]*)` \|", table.group(1))}
+    assert documented, "no paths were parsed — the table's shape changed and this check went blind"
+
+    app = main.create_app()
+    real = {shape(path) for path in app.openapi()["paths"]}
+    real |= {shape(getattr(route, "path", "")) for route in app.routes if getattr(route, "path", None)}
+
+    missing = documented - real
+    assert not missing, f"the README documents routes that do not exist: {sorted(missing)}"
+    assert len(documented) > 5, "the table parsed suspiciously small; check the pattern"
+
+
+#: Words that would only appear in prose describing the removed identity layer.
+#: `renew` is the awkward one: renewing a *lease* is real and current, so a line
+#: may use it only while saying so.
+BANNED = {
+    "login": (),
+    "logout": (),
+    "sign in": (),
+    "sessions/renew": (),
+    "renew": ("lease",),
+    "session": ("session manager", "session_manager", "streamable", "mcp-session", "no sessions"),
+}
+
+
+def test_the_documentation_does_not_speak_of_sessions_renewal_or_signing_in():
+    """A blunt grep, kept blunt on purpose.
+
+    Every one of these words described a mechanism that was deleted, and prose
+    describing a deleted mechanism reads exactly like prose describing a live
+    one. A reader who believes "the transport renews the session" skips
+    `heartbeat` and loses the task five minutes later.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for name in ("README.md", "SPEC.md", "TECHNICAL_DOCUMENTATION.md", "RECIPES.md", ".env.example"):
+        for number, line in enumerate((root / name).read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            if any(note.lower() in lowered for note in ALLOWED):
+                continue
+            for word, excuses in BANNED.items():
+                if word in lowered and not any(excuse in lowered for excuse in excuses):
+                    raise AssertionError(f"{name}:{number} says {word!r}: {line.strip()}")

@@ -555,13 +555,20 @@ def set_status(
     """Change the status, optionally attaching a result.
 
     **Compare-and-set is on by default.** With no `if_status` the server fills
-    in `in_progress`: the only state an executor may report from. A forgotten
-    `if_status` no longer breaks invariants in silence; an unconditional write
-    is an explicit `force`, and that is a human acting from the dashboard, not
-    an agent overlooking a parameter.
+    in `in_progress`: the only state an executor may report from. That is what
+    stops a human cancelling a task and a late agent overwriting the
+    cancellation with its own `done` — the agent expects `in_progress`, finds
+    `cancelled`, and is refused.
 
-    `actor` is who is writing. A task held by somebody else answers not_owner:
-    an agent must not close another's work by mistake.
+    `force` skips the check entirely. Nothing restricts it: there is no
+    authentication here, so any caller can use it, and keeping it for the
+    dashboard is a convention the agent author enforces rather than a rule this
+    function can. An executor that reaches for it walks around every invariant
+    above, including unblocking the dependants of a task it never held.
+
+    `actor` is who is writing, and it is taken at its word. A task held by
+    somebody else answers not_owner, which guards against confusion rather
+    than against impersonation.
 
     When a task fails but attempts remain (`max_attempts`), it does not stay
     failed — it returns to the queue after a pause. That is the retry.
@@ -582,9 +589,6 @@ def set_status(
             return Outcome.not_found, None
         if expected is not None and row["status"] != expected.value:
             return Outcome.status_conflict, _task(conn, row)
-        # Finishing releases the session: otherwise a human cancels a task and a
-        # late agent silently overwrites that cancellation with its own done.
-
         if who is not None and row["status"] == Status.in_progress.value and row["assignee_id"] not in (None, who):
             return Outcome.not_owner, _task(conn, row)
 

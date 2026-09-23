@@ -98,7 +98,7 @@ noted/
 │       ├── api.ts               # a typed client to /api
 │       ├── hooks.ts             # filters in the URL, loading, SSE
 │       ├── App.tsx              # the page assembly
-│       ├── parts/               # FilterBar · TaskTable · NewTaskDialog · TaskDialog · ConnectDialog · LoginScreen
+│       ├── parts/               # FilterBar · TaskTable · NewTaskDialog · TaskDialog · ConnectDialog
 │       ├── components/ui/       # copies of astralyx-ui components (in the repo, not a dependency)
 │       └── lib/                 # format.ts plus the kit's helpers
 └── tests/

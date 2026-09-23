@@ -187,8 +187,9 @@ low-priority indefinitely, and there is no priority ageing in the core.
 
 **A lease** is taken on every claim and renewed by `heartbeat`. When it expires
 the task returns to the queue, which is the whole recovery story: nothing else
-watches whether an agent is alive. A model cannot renew anything mid-step, so
-either the lease covers the longest step or the agent heartbeats between steps.
+watches whether an agent is alive. A model cannot extend a lease mid-step — it
+makes no tool calls while it is working — so either the lease covers the
+longest step or the agent heartbeats between steps.
 `lease_s=0` takes no lease at all and nothing will ever reclaim the task —
 including if its agent dies.
 

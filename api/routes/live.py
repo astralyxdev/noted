@@ -29,7 +29,10 @@ from fastapi.responses import StreamingResponse
 from api.services import tasks as tasks_service
 from api.utils import events, run_service
 
-router = APIRouter(include_in_schema=False)
+#: In the schema, unlike the dashboard's own static files: SPEC.md calls this
+#: stream a public contract, and a contract that `/docs` does not mention is
+#: one nobody can find.
+router = APIRouter(tags=["events"])
 
 KEEPALIVE_S = 20.0
 BATCH = 200
@@ -62,7 +65,7 @@ async def _cursor(request: Request, after: int | None) -> int:
     return await run_service(tasks_service.last_event_id)
 
 
-@router.get("/events")
+@router.get("/events", summary="The stream of journal entries, as server-sent events")
 async def live_events(request: Request, after: int | None = None):
     cursor = await _cursor(request, after)
 

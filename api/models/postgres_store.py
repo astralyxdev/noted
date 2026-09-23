@@ -58,17 +58,64 @@ _pool: ConnectionPool | None = None
 _pool_url: str | None = None
 
 
+def _skip(sql: str, at: int) -> int:
+    """The end of the string literal or comment starting at `at`.
+
+    Quotes double to escape themselves in SQL, so `'it''s'` is one literal.
+    """
+    if sql.startswith("--", at):
+        end = sql.find("\n", at)
+        return len(sql) if end < 0 else end
+    if sql.startswith("/*", at):
+        end = sql.find("*/", at)
+        return len(sql) if end < 0 else end + 2
+
+    cursor = at + 1
+    while cursor < len(sql):
+        if sql[cursor] != "'":
+            cursor += 1
+        elif sql.startswith("''", cursor):
+            cursor += 2
+        else:
+            return cursor + 1
+    return len(sql)
+
+
+def _opens_untranslatable(sql: str, at: int) -> bool:
+    return sql[at] == "'" or sql.startswith("--", at) or sql.startswith("/*", at)
+
+
 @lru_cache(maxsize=512)
 def translate(sql: str) -> str:
     """SQLite placeholders to psycopg ones. Cached: the statements are literals
     in the service modules, so the same handful of strings comes back forever.
 
-    The SQL in this project contains no `%` and no `?` inside a string literal,
-    which is what makes a substitution this blunt safe.
+    Only outside string literals and comments. A blunt substitution over the
+    whole statement is safe exactly as long as nobody writes SQL containing
+    `WHERE label = 'what?'` or `'HH:mm'` — the first becomes a placeholder
+    psycopg has no argument for, the second a named one called `mm`. Neither
+    fails loudly; both are the kind of thing somebody adds two years from now.
+
+    `%` is doubled everywhere, literals included, because psycopg unescapes it
+    across the whole query text and not only in the parts it considers code.
     """
-    out = sql.replace("%", "%%")
-    out = _NAMED.sub(r"%(\1)s", out)
-    return out.replace("?", "%s")
+    out: list[str] = []
+    cursor = 0
+    while cursor < len(sql):
+        if _opens_untranslatable(sql, cursor):
+            end = _skip(sql, cursor)
+            out.append(sql[cursor:end].replace("%", "%%"))
+            cursor = end
+            continue
+
+        end = cursor
+        while end < len(sql) and not _opens_untranslatable(sql, end):
+            end += 1
+        code = sql[cursor:end].replace("%", "%%")
+        code = _NAMED.sub(r"%(\1)s", code)
+        out.append(code.replace("?", "%s"))
+        cursor = end
+    return "".join(out)
 
 
 class Connection:
