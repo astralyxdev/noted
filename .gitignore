@@ -32,6 +32,10 @@ dist/
 # A throwaway repository the demo agents build into. It is a test of noted,
 # not part of it.
 demo_agent_project/
+demo_agent_project_2/
+
+# Run notes from the multi-agent test runs. Local measurements, not project docs.
+usage_resume.md
 # Local MCP wiring for the demo: it carries real agent keys.
 .mcp.json
 
