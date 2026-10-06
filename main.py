@@ -19,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from api import settings
 from api.models import database
 from api.models.envelope import Outcome, body, envelope
-from api.routes import live_router, tasks_router
+from api.routes import live_router, skill_router, tasks_router
 from api.routes.mcp import build as build_mcp
 from api.services import tasks as tasks_service
 from api.services.tasks import TaskError
@@ -101,6 +101,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(tasks_router)
     app.include_router(live_router)
+    app.include_router(skill_router)
     # MCP over HTTP on the same port: no separate adapter process is needed.
     app.mount("/mcp", mcp.streamable_http_app(streamable_http_path="/"))
 

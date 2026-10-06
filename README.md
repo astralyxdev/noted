@@ -111,6 +111,14 @@ The same address, command and a ready-made config snippet are behind the
 **Connect MCP** button in the dashboard header. Every tool, its parameters and
 the outcomes it can answer with are in [MCP.md](MCP.md).
 
+Agents get a skill for working the queue at `/skill.md`: connecting the MCP,
+the executor loop, the shape of a task body, relations and how far to
+decompose. It is written with the address it was fetched from:
+
+```bash
+mkdir -p ~/.claude/skills/noted && curl -fsS http://127.0.0.1:8787/skill.md -o ~/.claude/skills/noted/SKILL.md
+```
+
 The executor loop is short:
 
 ```

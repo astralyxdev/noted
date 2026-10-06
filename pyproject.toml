@@ -32,6 +32,10 @@ noted-api = "main:main"
 packages = ["api", "api.models", "api.routes", "api.services", "api.utils"]
 py-modules = ["main"]
 
+[tool.setuptools.package-data]
+# The agent skill is served from the package, so it has to travel with it.
+api = ["skill.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

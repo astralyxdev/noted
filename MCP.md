@@ -166,3 +166,6 @@ An `empty` answer means the queue had nothing within `timeout_s`. Claim again.
 
 More patterns — verification tasks, worktrees in the payload, supervisors,
 reacting to the event stream — are in [RECIPES.md](RECIPES.md).
+
+The agent-facing version of all this — the loop, the task body, relations and
+decomposition — is served as a skill at `/skill.md`.
